@@ -22,7 +22,7 @@ A specialized Discord bot designed to manage reminders for the "Solar Panel" gam
         *   **XX:50**
         *   **XX:55**
     *   **Traffic Awareness**: The bot will **ONLY** ping if there is at least one "Valid Player" online.
-        *   *Valid Player*: Has Role "Ahlwardt" + Status is Online/DND/Idle + Playing the Target Game.
+        *   *Valid Player*: Has Role "Ahlwardt" + Status is Online/DND/Idle + Playing **ANY** Game (ignoring specific name for now).
 
 ## 🛠️ Commands
 

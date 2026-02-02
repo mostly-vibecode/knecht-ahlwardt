@@ -7,19 +7,41 @@ The project files are ready to be uploaded.
 3. **Dependencies**: Wispbyte should auto-install from `requirements.txt`.
 
 ## 2. Configuration (Environment Variables)
-You need to set these "Secrets" or "Environment Variables" in your hosting panel (or `.env` file for local testing).
 
-| Variable | Description | Example |
-| :--- | :--- | :--- |
-| `DISCORD_TOKEN` | Your Bot Token from Discord Developer Portal | `MTA...` |
-| `TARGET_GUILD_ID` | Right-click Server Icon -> Copy ID | `123456789...` |
-| `TARGET_CHANNEL_ID` | Right-click the Channel for pings -> Copy ID | `987654321...` |
-| `TARGET_ROLE_NAME` | Exact name of the role to ping | `Ahlwardt` |
-| `TARGET_GAME_NAME` | Exact name of the game (Activity) to filter traffic | `Solar Panel Simulator` |
-| `TIMEZONE` | Your timezone (important for 04:00 reset) | `Europe/Berlin` |
+**Crucial Step**: Enable **Developer Mode** in your Discord client.
+- **Settings** (Gear Icon) → **Advanced** → Toggle **Developer Mode** ON.
 
-> [!TIP]
-> To get IDs, enable "Developer Mode" in Discord: User Settings > Advanced > Developer Mode.
+### How to obtain the values:
+
+#### `DISCORD_TOKEN`
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications).
+2. Click **New Application** (top right) → Name it "Knecht Ahlwardt" → Create.
+3. In the left sidebar, click **Bot**.
+4. Click **Reset Token** (yes, do it).
+5. **Copy** the token immediately. This is your `DISCORD_TOKEN`.
+   - *Important*: While here, scroll down to **Privileged Gateway Intents** and enable **Presence Intent** and **Server Members Intent**.
+
+#### `TARGET_GUILD_ID`
+1. In Discord, look at your Server Icon on the left list.
+2. **Right-click** the Server Icon.
+3. Click **Copy Server ID** (at the bottom of the menu).
+
+#### `TARGET_CHANNEL_ID`
+1. Navigate to the channel where you want the bot to post/ping.
+2. **Right-click** the channel name in the channel list.
+3. Click **Copy Channel ID**.
+
+#### `TARGET_ROLE_NAME`
+1. Go to **Server Settings** → **Roles**.
+2. Find the role you want to ping (e.g., "Ahlwardt").
+3. **Copy the name exactly** (case-sensitive).
+
+#### `TARGET_GAME_NAME`
+- **Currently Ignored**: The bot now checks if the user is playing *any* game (due to inconsistent status reports like Medal, Mod Loaders, etc.).
+- You can leave this blank or set it to anything.
+
+#### `TIMEZONE`
+- Use a TZ Database Name, like `Europe/Berlin`, `America/New_York`, or `UTC`.
 
 ## 3. Usage
 1. **Start**: In the channel, type `/panels_spawn`.

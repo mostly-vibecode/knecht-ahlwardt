@@ -62,7 +62,8 @@ def is_traffic_present(guild):
             
             is_playing = False
             for activity in member.activities:
-                if isinstance(activity, discord.Game) and activity.name == TARGET_GAME_NAME:
+                # User requested "any game name" for now to handle various status displays (Medal, Mod loaders, etc.)
+                if isinstance(activity, discord.Game):
                     is_playing = True
                     break
             
