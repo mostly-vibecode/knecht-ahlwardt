@@ -1,5 +1,6 @@
 import os
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from datetime import datetime
@@ -25,7 +26,21 @@ intents.message_content = True
 intents.members = True
 intents.presences = True
 
-bot = commands.Bot(command_prefix='/', intents=intents)
+class AhlwardtBot(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix='/', intents=intents)
+
+    async def setup_hook(self):
+        # Sync commands to the specific guild for instant updates
+        if TARGET_GUILD_ID:
+            guild = discord.Object(id=TARGET_GUILD_ID)
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            print(f"Synced commands to guild {TARGET_GUILD_ID}")
+        else:
+            print("Warning: TARGET_GUILD_ID not set. Commands may take up to 1 hour to appear globally.")
+
+bot = AhlwardtBot()
 
 # State
 tracking_message_id = None
@@ -43,7 +58,7 @@ def is_traffic_present(guild):
     Checks if there is at least one member who:
     1. Has the target role.
     2. Is not offline.
-    3. Is playing the target game.
+    3. Is playing ANY game (discord.Game).
     """
     role = discord.utils.get(guild.roles, name=TARGET_ROLE_NAME)
     if not role:
@@ -75,32 +90,33 @@ def is_traffic_present(guild):
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user.name}')
-    check_time.start()
+    if not check_time.is_running():
+        check_time.start()
 
-@bot.command(name='panels_spawn')
-async def panels_spawn(ctx):
-    """Creates the persistent tracking message."""
+@bot.tree.command(name='panels_spawn', description="Creates the persistent tracking message.")
+async def panels_spawn(interaction: discord.Interaction):
     global tracking_message_id
     embed = discord.Embed(title="Solar Panel Manager", description="React to manage panels.\n\n☀️ : Panels Placed\n🔧 : Panels Fixed (Current Hour)", color=0xFFA500)
-    msg = await ctx.send(embed=embed)
+    
+    await interaction.response.send_message(embed=embed)
+    msg = await interaction.original_response()
     tracking_message_id = msg.id
     
     # Bot pre-reacts for usability
     await msg.add_reaction(EMOJI_PLACE)
     await msg.add_reaction(EMOJI_FIX)
-    await ctx.send("Tracking started. Monitoring reactions...")
+    
+    # Follow-up message (hidden/ephemeral or just regular)
+    await interaction.followup.send("Tracking started. Monitoring reactions...", ephemeral=True)
 
-@bot.command(name='panels_collected')
-async def panels_collected(ctx):
-    """Resets the panel count (e.g., after collecting finished panels)."""
+@bot.tree.command(name='panels_collected', description="Resets the panel count (e.g., after collecting finished panels).")
+async def panels_collected(interaction: discord.Interaction):
     global tracking_message_id, panels_placed_count
     
     if tracking_message_id:
         try:
-            channel = ctx.channel
+            channel = interaction.channel
             msg = await channel.fetch_message(tracking_message_id)
-            # Clear Sun reactions (except bot's? easier to clear all and re-add)
-            # Or just remove all user reactions for Sun
             reaction = discord.utils.get(msg.reactions, emoji=EMOJI_PLACE)
             if reaction:
                 async for user in reaction.users():
@@ -110,18 +126,18 @@ async def panels_collected(ctx):
             print(f"Error resetting reactions: {e}")
 
     panels_placed_count = 0
-    await ctx.send("Panels marked as collected. Count reset.")
+    await interaction.response.send_message("Panels marked as collected. Count reset.")
 
-@bot.command(name='panels_status')
-async def panels_status(ctx):
+@bot.tree.command(name='panels_status', description="Debug status report.")
+async def panels_status(interaction: discord.Interaction):
     tz = get_target_timezone()
     now = datetime.now(tz)
-    traffic = is_traffic_present(ctx.guild)
+    traffic = is_traffic_present(interaction.guild)
     
     status_msg = f"**Status Report**\nTime: {now.strftime('%H:%M:%S')}\nTraffic Present: {traffic}"
-    await ctx.send(status_msg)
+    await interaction.response.send_message(status_msg)
 
-@tasks.loop(seconds=45) # Check slightly faster than a minute to ensure we catch the generic minute changes
+@tasks.loop(seconds=45) # Check slightly faster than a minute
 async def check_time():
     global last_checked_minute, tracking_message_id
     
@@ -131,16 +147,12 @@ async def check_time():
     tz = get_target_timezone()
     now = datetime.now(tz)
     
-    # Prevent running multiple times in the same minute
     if now.minute == last_checked_minute:
         return
     last_checked_minute = now.minute
 
     channel = bot.get_channel(TARGET_CHANNEL_ID)
     if not channel:
-        # Try to find channel from guild if ID is just a placeholder or verify logic
-        # For now, assume ID is correct or we need to fetch it dynamically.
-        # This implementation requires the correct ID in .env
         return
 
     try:
@@ -150,17 +162,14 @@ async def check_time():
         tracking_message_id = None
         return
 
-    # Logic Implementation
-    
+    # Logic Implementation... (same as before)
     # 04:00 - Server Restart / Wiper
     if now.hour == 4 and now.minute == 0:
-        # Wipe state
         reaction = discord.utils.get(msg.reactions, emoji=EMOJI_PLACE)
         if reaction:
             async for user in reaction.users():
                 if user != bot.user:
                     await msg.remove_reaction(EMOJI_PLACE, user)
-        # Wipe Fixes too
         reaction_fix = discord.utils.get(msg.reactions, emoji=EMOJI_FIX)
         if reaction_fix:
             async for user in reaction_fix.users():
@@ -170,7 +179,7 @@ async def check_time():
         await channel.send("ℹ️ Server Restart: Panel tracking reset.")
         return
 
-    # XX:30 - Reset "Fixed" status for the new hour
+    # XX:30 - Reset "Fixed" status
     if now.minute == 30:
         reaction = discord.utils.get(msg.reactions, emoji=EMOJI_FIX)
         if reaction:
@@ -181,17 +190,13 @@ async def check_time():
 
     # Reminders: XX:31, XX:45, XX:50, XX:55
     if now.minute in [31, 45, 50, 55]:
-        # Check if traffic warrants a ping
         if not is_traffic_present(channel.guild):
             return
 
-        # Check if already fixed
         reaction = discord.utils.get(msg.reactions, emoji=EMOJI_FIX)
-        # Count > 1 means Bot + at least 1 User
         if reaction and reaction.count > 1:
             return # Already fixed
 
-        # PING
         role = discord.utils.get(channel.guild.roles, name=TARGET_ROLE_NAME)
         mention = role.mention if role else "@here"
         
