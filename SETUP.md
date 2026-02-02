@@ -43,7 +43,23 @@ The project files are ready to be uploaded.
 #### `TIMEZONE`
 - Use a TZ Database Name, like `Europe/Berlin`, `America/New_York`, or `UTC`.
 
-## 3. Usage
+## 3. Inviting the Bot (Crucial!)
+Creating the bot in the portal does **not** add it to your server. You must invite it.
+
+1. Go to **Discord Developer Portal** → **OAuth2** → **URL Generator**.
+2. **Scopes**: Check ☑️ `bot`.
+3. **Bot Permissions**: Check these boxes:
+   - `View Channels`
+   - `Send Messages`
+   - `Embed Links`
+   - `Read Message History` (To find the tracking message after restart)
+   - `Add Reactions`
+   - `Manage Messages` (To remove user reactions)
+   - `Mention Everyone` (If you want it to ping roles)
+4. **Copy the URL** at the bottom.
+5. Paste it in your browser, select your server, and click **Authorize**.
+
+## 4. Usage
 1. **Start**: In the channel, type `/panels_spawn`.
    - The bot will post the tracking embed and add ☀️ and 🔧.
 2. **Placing**: Users click ☀️.
