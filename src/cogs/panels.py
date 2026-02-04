@@ -13,11 +13,19 @@ class PanelView(discord.ui.View):
     @discord.ui.button(label="Place Panel", style=discord.ButtonStyle.primary, emoji="☀️", custom_id="panel_place")
     async def place_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.cog.tracking_data["placed"] += 1
+        self.cog.daily_stats["placed"] += 1
         await self.update_message(interaction)
     
     @discord.ui.button(label="Fix Panel", style=discord.ButtonStyle.success, emoji="🔧", custom_id="panel_fix")
     async def fix_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.cog.tracking_data["fixed_this_hour"] += 1
+        
+        # Update Daily Fixes (HoF)
+        uid = interaction.user.id
+        if uid not in self.cog.daily_stats["fixes"]:
+            self.cog.daily_stats["fixes"][uid] = 0
+        self.cog.daily_stats["fixes"][uid] += 1
+        
         await self.update_message(interaction)
 
     async def update_message(self, interaction: discord.Interaction):
@@ -37,6 +45,11 @@ class Panels(commands.Cog):
         self.tracking_data = {
             "placed": 0,
             "fixed_this_hour": 0
+        }
+        # daily_stats: { "placed": int, "fixes": { user_id: count } }
+        self.daily_stats = {
+            "placed": 0,
+            "fixes": {} 
         }
         self.tracking_message_id = None
 
@@ -63,15 +76,37 @@ class Panels(commands.Cog):
         now = datetime.now(tz)
         present, debug_log = check_traffic_debug(interaction.guild)
         
+        # Format Hall of Fame
+        sorted_fixes = sorted(self.daily_stats["fixes"].items(), key=lambda item: item[1], reverse=True)
+        hof_str = "\n".join([f"<@{uid}>: {count}" for uid, count in sorted_fixes]) or "None"
+
         status_msg = (
             f"**Status Report**\n"
             f"Time: {now.strftime('%H:%M:%S')}\n"
             f"Traffic Present: {present}\n"
-            f"Placed Panels: {self.tracking_data['placed']}\n"
+            f"Placed Panels (Active): {self.tracking_data['placed']}\n"
+            f"Placed Panels (Daily): {self.daily_stats['placed']}\n"
             f"Fixed Panels (Hour): {self.tracking_data['fixed_this_hour']}\n\n"
+            f"**🏆 Hall of Fame (Daily Fixes)**:\n{hof_str}\n\n"
             f"**Debug Log**:\n```{debug_log}```"
         )
         await interaction.response.send_message(status_msg, ephemeral=True)
+
+    @app_commands.command(name='panels_hof', description="Show the Daily Hall of Fame for repairs.")
+    async def panels_hof(self, interaction: discord.Interaction):
+        sorted_fixes = sorted(self.daily_stats["fixes"].items(), key=lambda item: item[1], reverse=True)
+        
+        if not sorted_fixes:
+            await interaction.response.send_message("🏆 **Hall of Fame**: No repairs recorded today.", ephemeral=True)
+            return
+
+        embed = discord.Embed(title="🏆 Daily Repair Hall of Fame", color=0xD4AF37)
+        description = ""
+        for i, (uid, count) in enumerate(sorted_fixes, 1):
+            description += f"**{i}.** <@{uid}> — **{count}** fixes\n"
+        
+        embed.description = description
+        await interaction.response.send_message(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Panels(bot))

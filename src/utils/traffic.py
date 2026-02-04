@@ -46,4 +46,34 @@ def check_traffic_debug(guild: discord.Guild):
             
         logs.append(member_log)
     
-    return found_valid, "\n".join(logs)
+    return bool(get_valid_players(guild)), "\n".join(logs)
+
+def get_valid_players(guild: discord.Guild):
+    """
+    Returns a list of Valid Players (discord.Member).
+    Valid Player: Has Role + Online/DND/Idle + Playing RAGE or Game
+    """
+    role = discord.utils.get(guild.roles, name=TARGET_ROLE_NAME)
+    if not role:
+        return []
+
+    valid_players = []
+    members_with_role = [m for m in guild.members if role in m.roles]
+    
+    for member in members_with_role:
+        if member.status == discord.Status.offline:
+            continue
+            
+        if not member.activities:
+            continue
+            
+        is_playing = False
+        for activity in member.activities:
+            if isinstance(activity, discord.Game) or "RAGE Multiplayer" in activity.name:
+                is_playing = True
+                break
+        
+        if is_playing:
+            valid_players.append(member)
+            
+    return valid_players

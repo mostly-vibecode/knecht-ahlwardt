@@ -39,9 +39,23 @@ class BackgroundTasks(commands.Cog):
         
         # 04:00 - Hard Reset
         if now.hour == 4 and now.minute == 0:
+            # Daily Stats Report
+            placed_daily = panels_cog.daily_stats["placed"]
+            sorted_fixes = sorted(panels_cog.daily_stats["fixes"].items(), key=lambda item: item[1], reverse=True)
+            hof_str = "\n".join([f"<@{uid}>: {count}" for uid, count in sorted_fixes]) or "None"
+
+            summary = (
+                f"ℹ️ **Daily Report & Server Restart**\n"
+                f"☀️ Panels Placed: {placed_daily}\n"
+                f"🏆 **Hall of Fame**:\n{hof_str}\n"
+            )
+            await target_channel.send(summary)
+
+            # Reset Stats
             panels_cog.tracking_data["placed"] = 0
             panels_cog.tracking_data["fixed_this_hour"] = 0
-            await target_channel.send("ℹ️ Server Restart: Panel tracking reset.")
+            panels_cog.daily_stats["placed"] = 0
+            panels_cog.daily_stats["fixes"] = {}
             return
 
         # XX:30 - Reset "Fixed" status for hour
@@ -53,15 +67,17 @@ class BackgroundTasks(commands.Cog):
         # Reminders: XX:31, XX:45, XX:50, XX:55
         if now.minute in [31, 45, 50, 55]:
             # Check Traffic
-            traffic_present, _ = check_traffic_debug(target_channel.guild)
-            if not traffic_present:
+            from src.utils.traffic import get_valid_players
+            valid_players = get_valid_players(target_channel.guild)
+            
+            if not valid_players:
                 return
 
             # Check Logic
             if panels_cog.tracking_data["placed"] > 0 and panels_cog.tracking_data["fixed_this_hour"] == 0:
-                role = discord.utils.get(target_channel.guild.roles, name=TARGET_ROLE_NAME)
-                mention = role.mention if role else "@here"
-                await target_channel.send(f"⚠️ {mention} Panels placed but not fixed! (Time: {now.strftime('%H:%M')})")
+                mentions = [m.mention for m in valid_players]
+                mention_str = ", ".join(mentions)
+                await target_channel.send(f"⚠️ {mention_str} Panels placed but not fixed! (Time: {now.strftime('%H:%M')})")
 
     @check_time.before_loop
     async def before_check_time(self):
