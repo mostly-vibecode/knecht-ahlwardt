@@ -1,0 +1,10 @@
+{
+    "_comment": "Values are in Dollars ($). These amounts are added to the user's Hall of Fame score.",
+    "panels": {
+        "place": 10000,
+        "fix": 10000
+    },
+    "platzhalter": {
+        "action": 10000
+    }
+}

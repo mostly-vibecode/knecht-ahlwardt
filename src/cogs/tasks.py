@@ -3,7 +3,7 @@ from discord.ext import commands, tasks
 from datetime import datetime
 from src.utils.helpers import get_target_timezone
 from src.utils.traffic import check_traffic_debug
-from src.config import TARGET_CHANNEL_ID, TARGET_ROLE_NAME
+from src.config import TARGET_CHANNEL_ID, TARGET_ROLE_NAME, BACKUP_CHANNEL_ID
 
 class BackgroundTasks(commands.Cog):
     def __init__(self, bot):
@@ -39,23 +39,37 @@ class BackgroundTasks(commands.Cog):
         
         # 04:00 - Hard Reset
         if now.hour == 4 and now.minute == 0:
+            # Weekly Backups
+            if now.weekday() == 0: # Monday
+                backup_channel = self.bot.get_channel(BACKUP_CHANNEL_ID)
+                if backup_channel:
+                    file = panels_cog.export_stats_file()
+                    if file:
+                        await backup_channel.send(f"📦 **Weekly Backup** ({now.strftime('%Y-%m-%d')})", file=file)
+                else:
+                    print(f"Warning: Backup channel {BACKUP_CHANNEL_ID} not found.")
+
             # Daily Stats Report
-            placed_daily = panels_cog.daily_stats["placed"]
-            sorted_fixes = sorted(panels_cog.daily_stats["fixes"].items(), key=lambda item: item[1], reverse=True)
-            hof_str = "\n".join([f"<@{uid}>: {count}" for uid, count in sorted_fixes]) or "None"
+            # Daily Stats Report
+            leaderboard = panels_cog.get_leaderboard()
+            
+            hof_lines = []
+            for i, (uid, val, details) in enumerate(leaderboard, 1):
+                 hof_lines.append(f"{i}. <@{uid}>: **${val}** (P:{details['placed']} F:{details['fixes']} B:{details['batteries']})")
+            hof_str = "\n".join(hof_lines) or "None"
+
+            placed_daily = sum(panels_cog.daily_stats["placed"].values())
 
             summary = (
                 f"ℹ️ **Daily Report & Server Restart**\n"
                 f"☀️ Panels Placed: {placed_daily}\n"
-                f"🏆 **Hall of Fame**:\n{hof_str}\n"
+                f"🏆 **Performance HoF**:\n{hof_str}\n"
             )
             await target_channel.send(summary)
 
             # Reset Stats
-            panels_cog.tracking_data["placed"] = 0
             panels_cog.tracking_data["fixed_this_hour"] = 0
-            panels_cog.daily_stats["placed"] = 0
-            panels_cog.daily_stats["fixes"] = {}
+            panels_cog.reset_daily_stats()
             return
 
         # XX:30 - Reset "Fixed" status for hour
@@ -74,9 +88,22 @@ class BackgroundTasks(commands.Cog):
                 return
 
             # Check Logic
-            if panels_cog.tracking_data["placed"] > 0 and panels_cog.tracking_data["fixed_this_hour"] == 0:
+            # Check Logic
+            # Count eligible panels
+            eligible_count = 0
+            for panel in panels_cog.active_panels:
+                placed_dt = datetime.fromisoformat(panel["placed_at_iso"])
+                is_eligible = False
+                if placed_dt.hour != now.hour or placed_dt.date() != now.date():
+                    is_eligible = True
+                elif placed_dt.minute < 30 and now.minute >= 30:
+                    is_eligible = True
+                
+                if is_eligible:
+                    eligible_count += 1
+            
+            if eligible_count > 0 and panels_cog.tracking_data["fixed_this_hour"] == 0:
                 mentions = [m.mention for m in valid_players]
-                mention_str = ", ".join(mentions)
                 mention_str = ", ".join(mentions)
                 msg = await target_channel.send(f"⚠️ {mention_str} Panels placed but not fixed! (Time: {now.strftime('%H:%M')})")
                 await msg.add_reaction("✅")

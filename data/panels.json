@@ -1,0 +1,26 @@
+{
+    "active_panels": [
+        {
+            "id": "ecb8b4ddef6f417bbf7705a784bd53f3",
+            "placed_by": 358316937425584130,
+            "placed_by_name": "Kevin",
+            "placed_at_iso": "2026-02-06T17:53:08.037231+01:00",
+            "remaining_minutes": 60
+        },
+        {
+            "id": "0f2ad66d47c44aa99be57124fde5ead8",
+            "placed_by": 358316937425584130,
+            "placed_by_name": "Kevin",
+            "placed_at_iso": "2026-02-06T17:57:00.816507+01:00",
+            "remaining_minutes": 60
+        }
+    ],
+    "daily_batteries": {},
+    "daily_stats": {
+        "placed": {
+            "358316937425584130": 1
+        },
+        "fixes": {}
+    },
+    "tracking_message_id": 1469376340292665404
+}

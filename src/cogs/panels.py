@@ -2,6 +2,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime
+import json
+import os
+import uuid
 from src.utils.helpers import get_target_timezone
 from src.utils.traffic import check_traffic_debug
 
@@ -12,28 +15,48 @@ class PanelView(discord.ui.View):
 
     @discord.ui.button(label="Place Panel", style=discord.ButtonStyle.primary, emoji="☀️", custom_id="panel_place")
     async def place_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.cog.tracking_data["placed"] += 1
-        self.cog.daily_stats["placed"] += 1
+        user = interaction.user
+        tz = get_target_timezone()
+        now = datetime.now(tz)
+        
+        # Create new panel
+        panel = {
+            "id": uuid.uuid4().hex,
+            "placed_by": user.id,
+            "placed_by_name": user.display_name,
+            "placed_at_iso": now.isoformat(),
+            "remaining_minutes": 60
+        }
+        
+        self.cog.active_panels.append(panel)
+        
+        # Update Daily Stats (Placed)
+        if str(user.id) not in self.cog.daily_stats["placed"]:
+            self.cog.daily_stats["placed"][str(user.id)] = 0
+        self.cog.daily_stats["placed"][str(user.id)] += 1
+        
+        self.cog.save_stats()
         await self.update_message(interaction)
     
     @discord.ui.button(label="Fix Panel", style=discord.ButtonStyle.success, emoji="🔧", custom_id="panel_fix")
     async def fix_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.cog.tracking_data["fixed_this_hour"] += 1
+        user = interaction.user
         
-        # Update Daily Fixes (HoF)
-        uid = interaction.user.id
-        if uid not in self.cog.daily_stats["fixes"]:
-            self.cog.daily_stats["fixes"][uid] = 0
-        self.cog.daily_stats["fixes"][uid] += 1
+        result = self.cog.process_fix(user)
+        eligible_count = result["eligible_count"]
+        # collected_count = result["collected_count"] # Unused here
         
-        await self.update_message(interaction)
+        if eligible_count > 0:
+            await self.update_message(interaction)
+        else:
+            await interaction.response.send_message("❌ No panels eligible for repair right now. Wait for the repair window (XX:30+) or next hour.", ephemeral=True)
 
     async def update_message(self, interaction: discord.Interaction):
         embed = interaction.message.embeds[0]
         # Update description or fields with new counts
         embed.description = (
             f"**Current Status**\n\n"
-            f"☀️ **Placed**: {self.cog.tracking_data['placed']}\n"
+            f"☀️ **Active Panels**: {len(self.cog.active_panels)}\n"
             f"🔧 **Fixed (Hour)**: {self.cog.tracking_data['fixed_this_hour']}\n\n"
             f"Use buttons below to update."
         )
@@ -43,32 +66,254 @@ class Panels(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.tracking_data = {
-            "placed": 0,
+            "placed": 0, # Legacy
             "fixed_this_hour": 0
         }
-        # daily_stats: { "placed": int, "fixes": { user_id: count } }
+        
+        self.active_panels = [] # List of panel objects
+        self.daily_batteries = {} # { user_id: count }
+        
         self.daily_stats = {
-            "placed": 0,
-            "fixes": {} 
+            "placed": {}, # { user_id: count }
+            "fixes": {}   # { user_id: count }
         }
         self.tracking_message_id = None
+        self.data_file = "data/panels.json"
+        self.mechanics_file = "src/data/mechanics.json"
+        
+        # Ensure data directory exists
+        os.makedirs(os.path.dirname(self.data_file), exist_ok=True)
+        
+        self.mechanics = { "panels": {"place": 100, "fix": 50}, "batteries": {"collect": 200} } # Defaults
+        self.load_mechanics()
+        self.load_stats()
+        
+    def load_mechanics(self):
+        """Load value mapping from JSON."""
+        if os.path.exists(self.mechanics_file):
+            try:
+                with open(self.mechanics_file, 'r') as f:
+                    self.mechanics = json.load(f)
+            except Exception as e:
+                print(f"Error loading mechanics: {e}")
+
+    def save_stats(self):
+        """Save daily_stats to JSON file."""
+        try:
+            with open(self.data_file, 'w') as f:
+                data = {
+                    "active_panels": self.active_panels,
+                    "daily_batteries": self.daily_batteries,
+                    "daily_stats": self.daily_stats,
+                    "tracking_message_id": self.tracking_message_id
+                }
+                json.dump(data, f, indent=4)
+        except Exception as e:
+            print(f"Error saving stats: {e}")
+
+    def load_stats(self):
+        """Load daily_stats from JSON file."""
+        if not os.path.exists(self.data_file):
+            return
+
+        try:
+            with open(self.data_file, 'r') as f:
+                data = json.load(f)
+                
+                # Load active panels
+                self.active_panels = data.get("active_panels", [])
+                
+                # Load batteries (key conversion)
+                if "daily_batteries" in data:
+                    self.daily_batteries = {str(k): v for k, v in data["daily_batteries"].items()}
+                else:
+                    self.daily_batteries = {}
+                    
+                # Load stats
+                if "daily_stats" in data:
+                    stats = data["daily_stats"]
+                    
+                    # Migration: Check 'placed' type
+                    if "placed" in stats:
+                        if isinstance(stats["placed"], int):
+                            print(f"[Migration] Converting 'placed' from int ({stats['placed']}) to dict.")
+                            stats["placed"] = {} 
+                        else:
+                            stats["placed"] = {str(k): v for k, v in stats["placed"].items()}
+                    else:
+                        stats["placed"] = {}
+
+                    if "fixes" in stats:
+                        stats["fixes"] = {str(k): v for k, v in stats["fixes"].items()}
+                    
+                    self.daily_stats = stats
+                else:
+                    # Legacy support/Fall back
+                    if "fixes" in data: # Old format was just daily_stats
+                        self.daily_stats = {
+                            "placed": {},
+                            "fixes": {str(k): v for k, v in data["fixes"].items()}
+                        }
+
+                # Load tracking message ID
+                self.tracking_message_id = data.get("tracking_message_id")
+                        
+        except Exception as e:
+            print(f"Error loading stats: {e}")
+
+    def get_user_value(self, user_id):
+        """Calculate total value ($) for a user."""
+        total = 0
+        user_id = str(user_id)
+        
+        # Panels Placed
+        places = self.daily_stats["placed"].get(user_id, 0)
+        total += places * self.mechanics.get("panels", {}).get("place", 0)
+        
+        # Panels Fixed
+        fixes = self.daily_stats["fixes"].get(user_id, 0)
+        total += fixes * self.mechanics.get("panels", {}).get("fix", 0)
+        
+        # Batteries Collected
+        batteries = self.daily_batteries.get(user_id, 0)
+        total += batteries * self.mechanics.get("batteries", {}).get("collect", 0)
+        
+        return total
+
+    def get_leaderboard(self):
+        """Return a sorted list of (user_id, total_value, details_dict)."""
+        users = set()
+        users.update(self.daily_stats["placed"].keys())
+        users.update(self.daily_stats["fixes"].keys())
+        users.update(self.daily_batteries.keys())
+        
+        leaderboard = []
+        for uid in users:
+            val = self.get_user_value(uid)
+            details = {
+                "placed": self.daily_stats["placed"].get(uid, 0),
+                "fixes": self.daily_stats["fixes"].get(uid, 0),
+                "batteries": self.daily_batteries.get(uid, 0)
+            }
+            leaderboard.append((uid, val, details))
+            
+        # Sort by total value desc
+        leaderboard.sort(key=lambda x: x[1], reverse=True)
+        return leaderboard
+
+    def process_fix(self, user):
+        """Standardized logic for fixing panels (Button or Reaction)."""
+        tz = get_target_timezone()
+        now = datetime.now(tz)
+        
+        eligible_count = 0
+        collected_count = 0
+        
+        # Identify eligible panels
+        for panel in self.active_panels:
+            placed_dt = datetime.fromisoformat(panel["placed_at_iso"])
+            
+            is_eligible = False
+            if placed_dt.hour != now.hour or placed_dt.date() != now.date():
+                is_eligible = True # Previous hour/day
+            elif placed_dt.minute < 30 and now.minute >= 30:
+                is_eligible = True # Early placement, repair window open
+            
+            if is_eligible:
+                eligible_count += 1
+                panel["remaining_minutes"] -= 60
+                if panel["remaining_minutes"] <= 0:
+                    collected_count += 1
+        
+        # Remove collected panels
+        if collected_count > 0:
+            self.active_panels = [p for p in self.active_panels if p["remaining_minutes"] > 0]
+            
+            # Award Batteries
+            if str(user.id) not in self.daily_batteries:
+                self.daily_batteries[str(user.id)] = 0
+            self.daily_batteries[str(user.id)] += collected_count
+            
+        if eligible_count > 0:
+            self.tracking_data["fixed_this_hour"] += 1 
+            
+            # Update Daily Fixes (HoF)
+            if str(user.id) not in self.daily_stats["fixes"]:
+                self.daily_stats["fixes"][str(user.id)] = 0
+            self.daily_stats["fixes"][str(user.id)] += 1
+            
+            self.save_stats()
+            
+        return {
+            "eligible_count": eligible_count,
+            "collected_count": collected_count
+        }
+
+    @commands.Cog.listener()
+    async def on_reaction_add(self, reaction, user):
+        if user.bot:
+            return
+            
+        if str(reaction.emoji) == "✅" and "Panels placed but not fixed!" in reaction.message.content:
+            res = self.process_fix(user)
+            if res["eligible_count"] > 0:
+                try:
+                    await reaction.message.add_reaction("🔧") # Confirm fix
+                except:
+                    pass
+                
+                # Try update tracking message if exists
+                if self.tracking_message_id:
+                     try:
+                        channel = reaction.message.channel # Assumption: Same channel
+                        msg = await channel.fetch_message(self.tracking_message_id)
+                        
+                        embed = msg.embeds[0]
+                        embed.description = (
+                            f"**Current Status**\n\n"
+                            f"☀️ **Active Panels**: {len(self.active_panels)}\n"
+                            f"🔧 **Fixed (Hour)**: {self.tracking_data['fixed_this_hour']}\n\n"
+                            f"Use buttons below to update."
+                        )
+                        await msg.edit(embed=embed)
+                     except Exception as e:
+                        print(f"Failed to update tracking message from reaction: {e}")
+
+    def reset_daily_stats(self):
+        """Reset daily stats and save."""
+        self.daily_stats = {
+            "placed": {},
+            "fixes": {}
+        }
+        self.daily_batteries = {}
+        # NOTE: We do NOT clear active_panels on daily reset, they persist until fixed!
+        self.save_stats()
+
+    def export_stats_file(self):
+        """Return the stats file as a discord.File object."""
+        if os.path.exists(self.data_file):
+            return discord.File(self.data_file, filename="panels_backup.json")
+        return None
 
     @app_commands.command(name='panels_spawn', description="Spawn the tracking dashboard (Buttons).")
     async def panels_spawn(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="Solar Panel Manager", 
-            description=f"**Current Status**\n\n☀️ **Placed**: {self.tracking_data['placed']}\n🔧 **Fixed (Hour)**: {self.tracking_data['fixed_this_hour']}\n\nUse buttons below to update.", 
+            description=f"**Current Status**\n\n☀️ **Active Panels**: {len(self.active_panels)}\n🔧 **Fixed (Hour)**: {self.tracking_data['fixed_this_hour']}\n\nUse buttons below to update.", 
             color=0xFFA500
         )
         
         await interaction.response.send_message(embed=embed, view=PanelView(self))
         msg = await interaction.original_response()
         self.tracking_message_id = msg.id
+        self.save_stats()
 
-    @app_commands.command(name='panels_collected', description="Reset 'Placed' count to 0.")
+
+    @app_commands.command(name='panels_collected', description="Reset active panels count to 0 (Debug only).")
     async def panels_collected(self, interaction: discord.Interaction):
-        self.tracking_data["placed"] = 0
-        await interaction.response.send_message("✅ Panels collected. Count reset to 0.")
+        self.active_panels = []
+        self.save_stats()
+        await interaction.response.send_message("✅ Active panels cleared (Debug).")
 
     @app_commands.command(name='panels_status', description="Debug traffic and logic.")
     async def panels_status(self, interaction: discord.Interaction):
@@ -76,37 +321,61 @@ class Panels(commands.Cog):
         now = datetime.now(tz)
         present, debug_log = check_traffic_debug(interaction.guild)
         
-        # Format Hall of Fame
-        sorted_fixes = sorted(self.daily_stats["fixes"].items(), key=lambda item: item[1], reverse=True)
-        hof_str = "\n".join([f"<@{uid}>: {count}" for uid, count in sorted_fixes]) or "None"
+        # New HoF Logic
+        leaderboard = self.get_leaderboard()
+        
+        # Build String
+        hof_lines = []
+        for i, (uid, val, details) in enumerate(leaderboard, 1):
+             hof_lines.append(f"{i}. <@{uid}>: **${val}** (P:{details['placed']} F:{details['fixes']} B:{details['batteries']})")
+        hof_str = "\n".join(hof_lines) or "None"
+        
+        placed_total = sum(d["placed"] for _, _, d in leaderboard)
 
         status_msg = (
             f"**Status Report**\n"
             f"Time: {now.strftime('%H:%M:%S')}\n"
             f"Traffic Present: {present}\n"
-            f"Placed Panels (Active): {self.tracking_data['placed']}\n"
-            f"Placed Panels (Daily): {self.daily_stats['placed']}\n"
+            f"Active Panels: {len(self.active_panels)}\n"
+            f"Placed Panels (Daily): {placed_total}\n"
             f"Fixed Panels (Hour): {self.tracking_data['fixed_this_hour']}\n\n"
-            f"**🏆 Hall of Fame (Daily Fixes)**:\n{hof_str}\n\n"
+            f"**🏆 Value HoF**:\n{hof_str}\n\n"
             f"**Debug Log**:\n```{debug_log}```"
         )
         await interaction.response.send_message(status_msg, ephemeral=True)
 
-    @app_commands.command(name='panels_hof', description="Show the Daily Hall of Fame for repairs.")
+    @app_commands.command(name='panels_hof', description="Show the Daily Hall of Fame ($).")
     async def panels_hof(self, interaction: discord.Interaction):
-        sorted_fixes = sorted(self.daily_stats["fixes"].items(), key=lambda item: item[1], reverse=True)
+        leaderboard = self.get_leaderboard()
         
-        if not sorted_fixes:
-            await interaction.response.send_message("🏆 **Hall of Fame**: No repairs recorded today.", ephemeral=True)
+        if not leaderboard:
+            await interaction.response.send_message("🏆 **Hall of Fame**: No activity recorded today.", ephemeral=True)
             return
 
-        embed = discord.Embed(title="🏆 Daily Repair Hall of Fame", color=0xD4AF37)
-        description = ""
-        for i, (uid, count) in enumerate(sorted_fixes, 1):
-            description += f"**{i}.** <@{uid}> — **{count}** fixes\n"
+        embed = discord.Embed(title="🏆 Daily Performance Hall of Fame", color=0xD4AF37)
         
+        description = "**Total Earnings**\n"
+        for i, (uid, val, details) in enumerate(leaderboard, 1):
+            description += f"**{i}.** <@{uid}> — **${val}**\n"
+            
         embed.description = description
+        
         await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name='panels_reset', description="[ADMIN] Reset all daily stats manually.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def panels_reset(self, interaction: discord.Interaction):
+        self.reset_daily_stats()
+        await interaction.response.send_message("✅ Daily stats have been reset.", ephemeral=True)
+
+    @app_commands.command(name='panels_export', description="[ADMIN] Export the current stats JSON.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def panels_export(self, interaction: discord.Interaction):
+        file = self.export_stats_file()
+        if file:
+            await interaction.response.send_message("📦 Here is the current `panels.json`:", file=file, ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ No stats file found.", ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(Panels(bot))
