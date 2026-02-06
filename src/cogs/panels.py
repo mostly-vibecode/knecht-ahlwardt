@@ -7,6 +7,7 @@ import os
 import uuid
 from src.utils.helpers import get_target_timezone
 from src.utils.traffic import check_traffic_debug
+from src.utils.hof import HallOfFame
 
 class PanelView(discord.ui.View):
     def __init__(self, cog):
@@ -25,7 +26,7 @@ class PanelView(discord.ui.View):
             "placed_by": user.id,
             "placed_by_name": user.display_name,
             "placed_at_iso": now.isoformat(),
-            "remaining_minutes": 60
+            "remaining_minutes": self.cog.settings.get("panel_liveduration", 60)
         }
         
         self.cog.active_panels.append(panel)
@@ -60,7 +61,20 @@ class PanelView(discord.ui.View):
             f"🔧 **Fixed (Hour)**: {self.cog.tracking_data['fixed_this_hour']}\n\n"
             f"Use buttons below to update."
         )
-        await interaction.response.edit_message(embed=embed)
+        await interaction.message.edit(embed=embed)
+
+class ReminderView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None) # Persistent view
+        self.cog = cog
+
+    @discord.ui.button(label="Place Panel", style=discord.ButtonStyle.primary, emoji="➕", custom_id="reminder_place")
+    async def place_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.handle_place_interaction(interaction)
+
+    @discord.ui.button(label="Fix Panels", style=discord.ButtonStyle.success, emoji="✅", custom_id="reminder_fix")
+    async def fix_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.handle_fix_interaction(interaction, is_reminder=True)
 
 class Panels(commands.Cog):
     def __init__(self, bot):
@@ -79,23 +93,30 @@ class Panels(commands.Cog):
         }
         self.tracking_message_id = None
         self.data_file = "data/panels.json"
-        self.mechanics_file = "src/data/mechanics.json"
         
         # Ensure data directory exists
         os.makedirs(os.path.dirname(self.data_file), exist_ok=True)
         
-        self.mechanics = { "panels": {"place": 100, "fix": 50}, "batteries": {"collect": 200} } # Defaults
-        self.load_mechanics()
+        self.settings_file = "data/settings.json"
+        self.settings = {"panel_liveduration": 60}
+        self.load_settings()
+
+        self.hof = HallOfFame("data/mechanics.json")
         self.load_stats()
+
+    async def cog_load(self):
+        """Register persistent views on load."""
+        self.bot.add_view(PanelView(self))
+        self.bot.add_view(ReminderView(self))
         
-    def load_mechanics(self):
-        """Load value mapping from JSON."""
-        if os.path.exists(self.mechanics_file):
+    def load_settings(self):
+        """Load settings from JSON."""
+        if os.path.exists(self.settings_file):
             try:
-                with open(self.mechanics_file, 'r') as f:
-                    self.mechanics = json.load(f)
+                with open(self.settings_file, "r") as f:
+                    self.settings = json.load(f)
             except Exception as e:
-                print(f"Error loading mechanics: {e}")
+                print(f"Error loading settings: {e}")
 
     def save_stats(self):
         """Save daily_stats to JSON file."""
@@ -161,45 +182,57 @@ class Panels(commands.Cog):
         except Exception as e:
             print(f"Error loading stats: {e}")
 
-    def get_user_value(self, user_id):
-        """Calculate total value ($) for a user."""
-        total = 0
-        user_id = str(user_id)
-        
-        # Panels Placed
-        places = self.daily_stats["placed"].get(user_id, 0)
-        total += places * self.mechanics.get("panels", {}).get("place", 0)
-        
-        # Panels Fixed
-        fixes = self.daily_stats["fixes"].get(user_id, 0)
-        total += fixes * self.mechanics.get("panels", {}).get("fix", 0)
-        
-        # Batteries Collected
-        batteries = self.daily_batteries.get(user_id, 0)
-        total += batteries * self.mechanics.get("batteries", {}).get("collect", 0)
-        
-        return total
 
-    def get_leaderboard(self):
-        """Return a sorted list of (user_id, total_value, details_dict)."""
-        users = set()
-        users.update(self.daily_stats["placed"].keys())
-        users.update(self.daily_stats["fixes"].keys())
-        users.update(self.daily_batteries.keys())
+    def process_place(self, user):
+        """Logic for placing a panel."""
+        tz = get_target_timezone()
+        now = datetime.now(tz)
         
-        leaderboard = []
-        for uid in users:
-            val = self.get_user_value(uid)
-            details = {
-                "placed": self.daily_stats["placed"].get(uid, 0),
-                "fixes": self.daily_stats["fixes"].get(uid, 0),
-                "batteries": self.daily_batteries.get(uid, 0)
-            }
-            leaderboard.append((uid, val, details))
-            
-        # Sort by total value desc
-        leaderboard.sort(key=lambda x: x[1], reverse=True)
-        return leaderboard
+        # Create new panel
+        liveduration = self.settings.get("panel_liveduration", 60)
+        panel = {
+            "id": uuid.uuid4().hex,
+            "placed_by": user.id,
+            "placed_by_name": user.display_name,
+            "placed_at_iso": now.isoformat(),
+            "remaining_minutes": liveduration
+        }
+        
+        self.active_panels.append(panel)
+        
+        # Update Daily Stats (Placed)
+        if str(user.id) not in self.daily_stats["placed"]:
+            self.daily_stats["placed"][str(user.id)] = 0
+        self.daily_stats["placed"][str(user.id)] += 1
+        
+        self.save_stats()
+        return panel
+
+    async def handle_place_interaction(self, interaction: discord.Interaction):
+        """Shared handler for place buttons."""
+        user = interaction.user
+        panel = self.process_place(user)
+        
+        # Calculate ETA
+        tz = get_target_timezone()
+        placed_at = datetime.fromisoformat(panel["placed_at_iso"])
+        # Assuming liveduration is in minutes
+        ready_at = placed_at.replace(minute=(placed_at.minute + panel["remaining_minutes"]) % 60)
+        # Handle hour rollover if needed, though simple minute addition for display might be tricky if it spans hours.
+        # Better:
+        from datetime import timedelta
+        ready_time = placed_at + timedelta(minutes=panel["remaining_minutes"])
+        
+        # Ephemeral Message
+        await interaction.response.send_message(
+            f"✅ **Panel Placed!** It will be ready for repair at approx. **{ready_time.strftime('%H:%M')}**.", 
+            ephemeral=True
+        )
+        
+        # Update the view source if possible (if it was the main tracking view)
+        # Note: ReminderView messages don't update themselves usually, but PanelView messages do.
+        # We can try to update the main tracking message if it exists.
+        await self.update_tracking_message()
 
     def process_fix(self, user):
         """Standardized logic for fixing panels (Button or Reaction)."""
@@ -249,35 +282,106 @@ class Panels(commands.Cog):
             "collected_count": collected_count
         }
 
+    async def handle_fix_interaction(self, interaction: discord.Interaction, is_reminder=False):
+        """Shared handler for fix buttons."""
+        user = interaction.user
+        result = self.process_fix(user)
+        eligible_count = result["eligible_count"]
+        
+        if eligible_count > 0:
+            # Group active panels by ETA
+            from datetime import timedelta
+            tz = get_target_timezone()
+            now = datetime.now(tz)
+            
+            # Grouping logic
+            grouped_counts = {} # { "HH:MM window": count }
+            
+            for panel in self.active_panels:
+                if panel["remaining_minutes"] <= 0:
+                     continue
+                     
+                placed_dt = datetime.fromisoformat(panel["placed_at_iso"])
+                
+                # Determine Next Fix Window
+                # If placed < 30, window is XX:30. If >= 30, window is XX:00.
+                # Since we just fixed them (or they are pending for next hour), 
+                # we assume next availability is Next Hour.
+                
+                next_hour = now.hour + 1
+                if next_hour > 23:
+                    next_hour = 0
+                
+                if placed_dt.minute < 30:
+                    window_str = f"{next_hour:02d}:30"
+                else:
+                    window_str = f"{next_hour:02d}:00"
+                
+                if window_str not in grouped_counts:
+                    grouped_counts[window_str] = 0
+                grouped_counts[window_str] += 1
+
+            # Constructing the message
+            active_count = len(self.active_panels)
+            
+            msg = f"🔧 **Panels Fixed by {user.mention}!**\n"
+            
+            if grouped_counts:
+                msg += f"Remaining Active: **{active_count}**\n"
+                msg += "**Upcoming Repairs**:\n"
+                # Sort by time?
+                sorted_windows = sorted(grouped_counts.keys())
+                for win in sorted_windows:
+                    msg += f"• **{grouped_counts[win]}** @ {win}\n"
+            elif active_count > 0:
+                 msg += f"Remaining Active: **{active_count}** (All done for now?)"
+            else:
+                msg += "All panels collected! 🔋"
+            
+            if is_reminder:
+                await interaction.response.send_message(msg)
+            else:
+                await interaction.response.send_message(msg, ephemeral=False)
+            
+            await self.update_tracking_message()
+            
+        else:
+            await interaction.response.send_message("❌ No panels eligible for repair right now.", ephemeral=True)
+
+    async def update_tracking_message(self):
+        """Helper to update the main persistent message."""
+        if self.tracking_message_id:
+            try:
+                # We don't know the channel easily unless we store it or fetch it.
+                # But we can try to find it if we had the interaction.
+                # Ideally, Panels cog should know the channel ID from config.
+                from src.config import TARGET_CHANNEL_ID
+                channel = self.bot.get_channel(TARGET_CHANNEL_ID)
+                if channel:
+                    msg = await channel.fetch_message(self.tracking_message_id)
+                    embed = msg.embeds[0]
+                    embed.description = (
+                        f"**Current Status**\n\n"
+                        f"☀️ **Active Panels**: {len(self.active_panels)}\n"
+                        f"🔧 **Fixed (Hour)**: {self.tracking_data['fixed_this_hour']}\n\n"
+                        f"Use buttons below to update."
+                    )
+                    await msg.edit(embed=embed)
+            except Exception as e:
+                print(f"Failed to update tracking message: {e}")
+
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction, user):
         if user.bot:
             return
             
         if str(reaction.emoji) == "✅" and "Panels placed but not fixed!" in reaction.message.content:
+            # Legacy Reaction Support
             res = self.process_fix(user)
             if res["eligible_count"] > 0:
-                try:
-                    await reaction.message.add_reaction("🔧") # Confirm fix
-                except:
-                    pass
-                
-                # Try update tracking message if exists
-                if self.tracking_message_id:
-                     try:
-                        channel = reaction.message.channel # Assumption: Same channel
-                        msg = await channel.fetch_message(self.tracking_message_id)
-                        
-                        embed = msg.embeds[0]
-                        embed.description = (
-                            f"**Current Status**\n\n"
-                            f"☀️ **Active Panels**: {len(self.active_panels)}\n"
-                            f"🔧 **Fixed (Hour)**: {self.tracking_data['fixed_this_hour']}\n\n"
-                            f"Use buttons below to update."
-                        )
-                        await msg.edit(embed=embed)
-                     except Exception as e:
-                        print(f"Failed to update tracking message from reaction: {e}")
+                # Removed the "bad" reaction add (🔧)
+                # Just update tracking
+                await self.update_tracking_message()
 
     def reset_daily_stats(self):
         """Reset daily stats and save."""
@@ -321,8 +425,9 @@ class Panels(commands.Cog):
         now = datetime.now(tz)
         present, debug_log = check_traffic_debug(interaction.guild)
         
+        
         # New HoF Logic
-        leaderboard = self.get_leaderboard()
+        leaderboard = self.hof.get_leaderboard(self.daily_stats, self.daily_batteries)
         
         # Build String
         hof_lines = []
@@ -346,12 +451,12 @@ class Panels(commands.Cog):
 
     @app_commands.command(name='panels_hof', description="Show the Daily Hall of Fame ($).")
     async def panels_hof(self, interaction: discord.Interaction):
-        leaderboard = self.get_leaderboard()
+        leaderboard = self.hof.get_leaderboard(self.daily_stats, self.daily_batteries)
         
         if not leaderboard:
             await interaction.response.send_message("🏆 **Hall of Fame**: No activity recorded today.", ephemeral=True)
             return
-
+        
         embed = discord.Embed(title="🏆 Daily Performance Hall of Fame", color=0xD4AF37)
         
         description = "**Total Earnings**\n"

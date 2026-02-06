@@ -105,8 +105,15 @@ class BackgroundTasks(commands.Cog):
             if eligible_count > 0 and panels_cog.tracking_data["fixed_this_hour"] == 0:
                 mentions = [m.mention for m in valid_players]
                 mention_str = ", ".join(mentions)
-                msg = await target_channel.send(f"⚠️ {mention_str} Panels placed but not fixed! (Time: {now.strftime('%H:%M')})")
-                await msg.add_reaction("✅")
+                
+                # Import view safely
+                from src.cogs.panels import ReminderView
+                view = ReminderView(panels_cog)
+                
+                await target_channel.send(
+                    f"⚠️ {mention_str} Panels placed but not fixed! (Time: {now.strftime('%H:%M')})", 
+                    view=view
+                )
 
     @check_time.before_loop
     async def before_check_time(self):

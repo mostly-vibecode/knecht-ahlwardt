@@ -4,6 +4,9 @@
         "place": 10000,
         "fix": 10000
     },
+    "batteries": {
+        "collect": 20000
+    },
     "platzhalter": {
         "action": 10000
     }
