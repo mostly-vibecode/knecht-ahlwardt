@@ -16,14 +16,14 @@ A specialized Discord bot designed to manage reminders for the "Solar Panel" gam
     *   Users click the 🔧 reaction to mark the panels as "Fixed" for the current hour.
     *   **Auto-Reset**: At **XX:30** of the *next* hour, the bot automatically removes user 🔧 reactions, resetting the status to "Not Fixed" for the new cycle.
 4.  **Reminders**:
-    *   If panels are **not** fixed (no user 🔧 reaction), the bot will Ping the team at:
+    *   If panels are **not** fixed (no user 🔧 reaction), the bot will Ping the ACTIVE users directly in 1 post at:
         *   **XX:31**
         *   **XX:45**
         *   **XX:50**
         *   **XX:55**
     *   **Traffic Awareness**: The bot will **ONLY** ping if there is at least one "Valid Player" online.
-        *   *Valid Player*: Has Role "Ahlwardt" + Status is Online/DND/Idle + Playing **ANY** Game (ignoring specific name for now).
-
+        *   *Valid Player*: Has Role "Ahlwardt" + Status is Online/DND/Idle + Playing **RAGE** Game
+    *   BOT will remember the ids and timestamps of fixes, so it can print a hall of fame of fixers. HoF can be posted manually via the /panels_status debug command or via a new /panels_hof command. Also print daily stats (Panels placed, panels collected, HoF) at the end of day server reset message at 0400.
 ## 🛠️ Commands
 
 | Command | Description |

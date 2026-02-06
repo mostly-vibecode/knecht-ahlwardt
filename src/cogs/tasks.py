@@ -77,7 +77,9 @@ class BackgroundTasks(commands.Cog):
             if panels_cog.tracking_data["placed"] > 0 and panels_cog.tracking_data["fixed_this_hour"] == 0:
                 mentions = [m.mention for m in valid_players]
                 mention_str = ", ".join(mentions)
-                await target_channel.send(f"⚠️ {mention_str} Panels placed but not fixed! (Time: {now.strftime('%H:%M')})")
+                mention_str = ", ".join(mentions)
+                msg = await target_channel.send(f"⚠️ {mention_str} Panels placed but not fixed! (Time: {now.strftime('%H:%M')})")
+                await msg.add_reaction("✅")
 
     @check_time.before_loop
     async def before_check_time(self):
