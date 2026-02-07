@@ -494,22 +494,51 @@ class Panels(commands.Cog):
         # New HoF Logic
         leaderboard = self.hof.get_leaderboard(self.daily_work, self.daily_profit, self.daily_batteries)
         
-        # Build String
-        hof_lines = []
+        # --- Value HoF (Detail) ---
+        p_val = self.hof.mechanics.get("place_value", 0)
+        f_val = self.hof.mechanics.get("fix_value", 0)
+        b_val = self.hof.mechanics.get("battery_value", 0)
+        
+        value_hof_lines = []
         for i, (uid, val, details) in enumerate(leaderboard, 1):
-             hof_lines.append(f"{i}. <@{uid}>: **${val}** (P:{details['placed']} F:{details['fixes']} B:{details['batteries']})")
-        hof_str = "\n".join(hof_lines) or "None"
+             # Format: 1. @User: $20000 (3 P * $1000 + 1 F * $1000)
+             # Abbreviations: P=Place, F=Fix, B=Battery
+             parts = []
+             if details['placed'] > 0: parts.append(f"{details['placed']}P*${p_val}")
+             if details['fixes'] > 0: parts.append(f"{details['fixes']}F*${f_val}")
+             if details['batteries'] > 0: parts.append(f"{details['batteries']}B*${b_val}")
+             calc_str = " + ".join(parts) or "No Value Actions"
+             
+             value_hof_lines.append(f"{i}. <@{uid}>: **${val}** ({calc_str})")
+        value_hof_str = "\n".join(value_hof_lines) or "None"
+
+        # --- Work HoF (Activity Count) ---
+        # Sort by total actions (placed + fixes)
+        work_sorted = sorted(leaderboard, key=lambda x: (x[2]['placed'] + x[2]['fixes']), reverse=True)
+        work_hof_lines = []
+        for i, (uid, _, details) in enumerate(work_sorted, 1):
+            total_acts = details['placed'] + details['fixes']
+            if total_acts > 0:
+                work_hof_lines.append(f"{i}. <@{uid}>: **{total_acts} Acts** (P:{details['placed']} F:{details['fixes']})")
+        work_hof_str = "\n".join(work_hof_lines) or "None"
         
         placed_total = sum(d["placed"] for _, _, d in leaderboard)
 
         # Active Panel Details
+        import math
         panel_lines = []
         for p in self.active_panels:
             pid = p['id'][:6]
             pname = p.get('placed_by_name', 'Unknown')
             rem = p['remaining_minutes']
-            interactions = len(p.get('interactions', []))
-            panel_lines.append(f"`{pid}` {pname}: {rem}m left ({interactions} acts)")
+            
+            # Interactions Logic
+            interactions = p.get('interactions', [])
+            fixes_done = len([i for i in interactions if i['action'] == 'fix'])
+            fixes_needed = math.ceil(rem / 60)
+            total_fixes = fixes_done + fixes_needed
+            
+            panel_lines.append(f"`{pid}` {pname}: {rem}m left ({fixes_done}/{total_fixes} repairs done)")
         panel_str = "\n".join(panel_lines) or "No active panels."
 
         status_msg = (
@@ -520,7 +549,8 @@ class Panels(commands.Cog):
             f"Placed Panels (Daily): {placed_total}\n"
             f"Fixed Panels (Hour): {self.tracking_data['fixed_this_hour']}\n\n"
             f"**☀️ Active Panels Detail**:\n{panel_str}\n\n"
-            f"**🏆 Value HoF**:\n{hof_str}\n\n"
+            f"**🏆 Value HoF**:\n{value_hof_str}\n\n"
+            f"**🔨 Work HoF**:\n{work_hof_str}\n\n"
             f"**Debug Log**:\n```{debug_log}```"
         )
         await interaction.response.send_message(status_msg, ephemeral=True)
