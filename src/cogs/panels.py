@@ -9,59 +9,6 @@ from src.utils.helpers import get_target_timezone
 from src.utils.traffic import check_traffic_debug
 from src.utils.hof import HallOfFame
 
-class PanelView(discord.ui.View):
-    def __init__(self, cog):
-        super().__init__(timeout=None) # Persistent view
-        self.cog = cog
-
-    @discord.ui.button(label="Place Panel", style=discord.ButtonStyle.primary, emoji="☀️", custom_id="panel_place")
-    async def place_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user = interaction.user
-        tz = get_target_timezone()
-        now = datetime.now(tz)
-        
-        # Create new panel
-        panel = {
-            "id": uuid.uuid4().hex,
-            "placed_by": user.id,
-            "placed_by_name": user.display_name,
-            "placed_at_iso": now.isoformat(),
-            "remaining_minutes": self.cog.settings.get("panel_liveduration", 60)
-        }
-        
-        self.cog.active_panels.append(panel)
-        
-        # Update Daily Stats (Placed)
-        if str(user.id) not in self.cog.daily_stats["placed"]:
-            self.cog.daily_stats["placed"][str(user.id)] = 0
-        self.cog.daily_stats["placed"][str(user.id)] += 1
-        
-        self.cog.save_stats()
-        await self.update_message(interaction)
-    
-    @discord.ui.button(label="Fix Panel", style=discord.ButtonStyle.success, emoji="🔧", custom_id="panel_fix")
-    async def fix_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user = interaction.user
-        
-        result = self.cog.process_fix(user)
-        eligible_count = result["eligible_count"]
-        # collected_count = result["collected_count"] # Unused here
-        
-        if eligible_count > 0:
-            await self.update_message(interaction)
-        else:
-            await interaction.response.send_message("❌ No panels eligible for repair right now. Wait for the repair window (XX:30+) or next hour.", ephemeral=True)
-
-    async def update_message(self, interaction: discord.Interaction):
-        embed = interaction.message.embeds[0]
-        # Update description or fields with new counts
-        embed.description = (
-            f"**Current Status**\n\n"
-            f"☀️ **Active Panels**: {len(self.cog.active_panels)}\n"
-            f"🔧 **Fixed (Hour)**: {self.cog.tracking_data['fixed_this_hour']}\n\n"
-            f"Use buttons below to update."
-        )
-        await interaction.message.edit(embed=embed)
 
 class ReminderView(discord.ui.View):
     def __init__(self, cog):
@@ -106,7 +53,6 @@ class Panels(commands.Cog):
 
     async def cog_load(self):
         """Register persistent views on load."""
-        self.bot.add_view(PanelView(self))
         self.bot.add_view(ReminderView(self))
         
     def load_settings(self):
@@ -225,7 +171,7 @@ class Panels(commands.Cog):
         
         # Ephemeral Message
         await interaction.response.send_message(
-            f"✅ **Panel Placed!** It will be ready for repair at approx. **{ready_time.strftime('%H:%M')}**.", 
+            f"✅ **Panel Placed!** If repaired every hour, it will be done at approx. **{ready_time.strftime('%H:%M')}**.",
             ephemeral=True
         )
         
@@ -353,12 +299,17 @@ class Panels(commands.Cog):
         if self.tracking_message_id:
             try:
                 # We don't know the channel easily unless we store it or fetch it.
-                # But we can try to find it if we had the interaction.
-                # Ideally, Panels cog should know the channel ID from config.
+                # We can try to fetch it from the guild using config channel ID.
                 from src.config import TARGET_CHANNEL_ID
                 channel = self.bot.get_channel(TARGET_CHANNEL_ID)
                 if channel:
-                    msg = await channel.fetch_message(self.tracking_message_id)
+                    try:
+                        msg = await channel.fetch_message(self.tracking_message_id)
+                    except discord.NotFound:
+                        self.tracking_message_id = None
+                        self.save_stats()
+                        return
+
                     embed = msg.embeds[0]
                     embed.description = (
                         f"**Current Status**\n\n"
@@ -399,15 +350,15 @@ class Panels(commands.Cog):
             return discord.File(self.data_file, filename="panels_backup.json")
         return None
 
-    @app_commands.command(name='panels_spawn', description="Spawn the tracking dashboard (Buttons).")
+    @app_commands.command(name='panels_spawn', description="Spawn the panel control dashboard.")
     async def panels_spawn(self, interaction: discord.Interaction):
         embed = discord.Embed(
-            title="Solar Panel Manager", 
+            title="Solar Panel Control", 
             description=f"**Current Status**\n\n☀️ **Active Panels**: {len(self.active_panels)}\n🔧 **Fixed (Hour)**: {self.tracking_data['fixed_this_hour']}\n\nUse buttons below to update.", 
-            color=0xFFA500
+            color=0x00FF00
         )
         
-        await interaction.response.send_message(embed=embed, view=PanelView(self))
+        await interaction.response.send_message(embed=embed, view=ReminderView(self))
         msg = await interaction.original_response()
         self.tracking_message_id = msg.id
         self.save_stats()

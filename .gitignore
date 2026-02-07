@@ -9,6 +9,9 @@ Thumbs.db
 .env.test.local
 .env.production.local
 
+# data
+data/
+
 # Dependencies
 node_modules/
 /venv/
