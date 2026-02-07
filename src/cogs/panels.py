@@ -502,6 +502,16 @@ class Panels(commands.Cog):
         
         placed_total = sum(d["placed"] for _, _, d in leaderboard)
 
+        # Active Panel Details
+        panel_lines = []
+        for p in self.active_panels:
+            pid = p['id'][:6]
+            pname = p.get('placed_by_name', 'Unknown')
+            rem = p['remaining_minutes']
+            interactions = len(p.get('interactions', []))
+            panel_lines.append(f"`{pid}` {pname}: {rem}m left ({interactions} acts)")
+        panel_str = "\n".join(panel_lines) or "No active panels."
+
         status_msg = (
             f"**Status Report**\n"
             f"Time: {now.strftime('%H:%M:%S')}\n"
@@ -509,6 +519,7 @@ class Panels(commands.Cog):
             f"Active Panels: {len(self.active_panels)}\n"
             f"Placed Panels (Daily): {placed_total}\n"
             f"Fixed Panels (Hour): {self.tracking_data['fixed_this_hour']}\n\n"
+            f"**☀️ Active Panels Detail**:\n{panel_str}\n\n"
             f"**🏆 Value HoF**:\n{hof_str}\n\n"
             f"**Debug Log**:\n```{debug_log}```"
         )
