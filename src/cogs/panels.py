@@ -1,7 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 import uuid
@@ -203,8 +203,76 @@ class Panels(commands.Cog):
         # We can try to update the main tracking message if it exists.
         await self.update_tracking_message()
 
+    def calculate_panel_state(self, panel):
+        """
+        Calculate the real-time state of a panel.
+        Returns: { 
+            "remaining_minutes": int, 
+            "total_delay": int, 
+            "expiry_iso": str 
+        }
+        """
+        tz = get_target_timezone()
+        now = datetime.now(tz)
+        placed_at = datetime.fromisoformat(panel["placed_at_iso"])
+        
+        # Base Duration
+        liveduration = self.settings.get("panel_liveduration", 60)
+        
+        # Calculate Penalties (Delays)
+        # Iterate hour by hour from placement to now
+        total_delay_minutes = 0
+        
+        # Start checking from the *next* hour after placement
+        # Example: Placed 10:25. 
+        # Window 10:xx -> No maintenance needed (just placed).
+        # Window 11:xx -> Repair needed between 11:30-11:59.
+        
+        check_time = placed_at.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        
+        while check_time < now:
+            # Define the repair window for this hour (XX:30 - XX:59)
+            window_start = check_time.replace(minute=30)
+            window_end = check_time.replace(minute=59, second=59)
+            
+            # If we haven't reached the start of the window yet in real time, break
+            if window_start > now:
+                break
+                
+            # Check if this window was missed
+            # We look for a 'fix' interaction within this window
+            
+            # Optimization: If the panel is already "finished" by logic before this window, stop?
+            # Actually, per story, if nobody fixes it, it just delays.
+            
+            # Was it fixed in this window?
+            is_fixed = False
+            for i in panel.get("interactions", []):
+                if i["action"] == "fix":
+                    i_time = datetime.fromisoformat(i["timestamp"])
+                    if window_start <= i_time <= window_end:
+                        is_fixed = True
+                        break
+            
+            if not is_fixed:
+                # If checking a past completed window, it's a miss
+                if now > window_end:
+                     total_delay_minutes += 60
+            
+            check_time += timedelta(hours=1)
+            
+        # Finish Time = Placed + Duration + Delay
+        finish_time = placed_at + timedelta(minutes=liveduration + total_delay_minutes)
+        remaining = (finish_time - now).total_seconds() / 60
+        
+        return {
+            "remaining_minutes": int(remaining),
+            "total_delay": total_delay_minutes,
+            "expiry_iso": finish_time.isoformat()
+        }
+
     def process_fix(self, user):
-        """Standardized logic for fixing panels (Button or Reaction)."""
+        """Standardized logic for fixing panels (Maintain or Collect)."""
         tz = get_target_timezone()
         now = datetime.now(tz)
         
@@ -214,41 +282,84 @@ class Panels(commands.Cog):
         # Identify eligible panels
         self.check_daily_reset()
         
+        # "Fix" logic: 
+        # A fix is valid if it's in the XX:30 - XX:59 window OR if the panel is ready for collection.
+        # Check simple time window for eligibility:
+        is_maintenance_window = (now.minute >= 30)
+        
         for panel in self.active_panels:
-            placed_dt = datetime.fromisoformat(panel["placed_at_iso"])
+            state = self.calculate_panel_state(panel)
+            remaining = state["remaining_minutes"]
+            
+            # Conditions to interact:
+            # 1. Ready to Collect: remaining <= 0
+            # 2. Maintenance: remaining > 0 AND is_maintenance_window (XX:30+)
             
             is_eligible = False
-            if placed_dt.hour != now.hour or placed_dt.date() != now.date():
-                is_eligible = True # Previous hour/day
-            elif placed_dt.minute < 30 and now.minute >= 30:
-                is_eligible = True # Early placement, repair window open
+            if remaining <= 0:
+                is_eligible = True # Collect
+            elif is_maintenance_window:
+                is_eligible = True # Maintain
             
             if is_eligible:
                 eligible_count += 1
-                panel["remaining_minutes"] -= 60
+                
+                # Check duplication? 
+                # If we already fixed in THIS window, do we fix again?
+                # Story says: "p3 fixes both panel on 14:34 -> ETAs stay true"
+                # Implies we just record it.
                 
                 # Record Interaction
-                # Verify we haven't already fixed this hour? 
-                # (Simple logic: if eligible, we fix. We rely on calling logic not to spam fix)
-                # But wait, if multiple people fix? We can't prevent it easily without more state.
-                # For now, we assume one fix event processes all eligible panels for the user.
-                
                 panel["interactions"].append({
                     "user_id": str(user.id),
                     "action": "fix",
                     "timestamp": now.isoformat()
                 })
-
-                if panel["remaining_minutes"] <= 0:
+                
+                # Re-calculate state to see if it pushed us to "Finished" or if it was already finished
+                # Actually, if it WAS <= 0, we just collected it.
+                if remaining <= 0:
                     collected_count += 1
         
         new_active_panels = []
         for panel in self.active_panels:
-            if panel["remaining_minutes"] > 0:
+            # Re-calc state to verify if it's REALLY done and collected
+            # We rely on the collected_count trigger logic above, but we need to remove them from active list
+            # The logic above "if remaining <= 0" was based on PRE-interaction state.
+            
+            # If we just added a fix to a panel that was <= 0, it means we collected it.
+            # We need to distinguish "Collected" vs "Just Maintained"
+            
+            # Simple check: Was it marked eligible because it was finished?
+            # Recalculate state to be sure
+            state = self.calculate_panel_state(panel)
+            
+            # Wait, if we just fixed it, it's a new interaction.
+            # If it was <= 0, we want to pop it.
+            
+            # To avoid race conditions or logic errors, let's look at the timestamps
+            # If the panel expiration (finish_time) is in the PAST, and we just fixed it (now),
+            # clearly we collected it.
+            
+            finish_dt = datetime.fromisoformat(state["expiry_iso"])
+            
+            is_collected = False
+            if state["remaining_minutes"] <= 0:
+                # It is ready. Did we just fix it?
+                # Look for a fix timestamp that is > finish_dt?
+                # Or just checking if we performed an action in this call is enough?
+                # We used "eligible_count" above.
+                
+                # Let's check if the LAST interaction was a fix by THIS user at THIS time (approx)
+                last = panel["interactions"][-1]
+                if last["user_id"] == str(user.id) and last["action"] == "fix":
+                     # Yes, we just fixed it and it is finished.
+                     is_collected = True
+            
+            if not is_collected:
                 new_active_panels.append(panel)
             else:
                 # PAYOUT LOGIC (On Collection Only)
-                # Distribute value based on interactions
                 interactions = panel.get("interactions", [])
                 total_interactions = len(interactions)
                 
@@ -268,13 +379,13 @@ class Panels(commands.Cog):
                              self.daily_profit[uid] = self.daily_profit.get(uid, 0) + share
 
         self.active_panels = new_active_panels
-
-        # Update Battery Counts (User who triggered collection)
+        
+        # Update Battery Counts for Collector
         if collected_count > 0:
-            if str(user.id) not in self.daily_batteries:
+             if str(user.id) not in self.daily_batteries:
                 self.daily_batteries[str(user.id)] = 0
-            self.daily_batteries[str(user.id)] += collected_count
-            
+             self.daily_batteries[str(user.id)] += collected_count
+
         if eligible_count > 0:
             self.tracking_data["fixed_this_hour"] += 1 
             
@@ -297,91 +408,49 @@ class Panels(commands.Cog):
         eligible_count = result["eligible_count"]
         
         if eligible_count > 0:
-            # Group active panels by ETA
-            from datetime import timedelta
-            tz = get_target_timezone()
-            now = datetime.now(tz)
-            
-            # Grouping logic
-            grouped_counts = {} # { "HH:MM window": count }
-            
-            for panel in self.active_panels:
-                if panel["remaining_minutes"] <= 0:
-                     continue
-                     
-                placed_dt = datetime.fromisoformat(panel["placed_at_iso"])
-                
-                # Determine Next Fix Window
-                # If placed < 30, window is XX:30. If >= 30, window is XX:00.
-                # Since we just fixed them (or they are pending for next hour), 
-                # we assume next availability is Next Hour.
-                
-                next_hour = now.hour + 1
-                if next_hour > 23:
-                    next_hour = 0
-                
-                if placed_dt.minute < 30:
-                    window_str = f"{next_hour:02d}:30"
-                else:
-                    window_str = f"{next_hour:02d}:00"
-                
-                if window_str not in grouped_counts:
-                    grouped_counts[window_str] = 0
-                grouped_counts[window_str] += 1
-
-            # Constructing the message
-            active_count = len(self.active_panels)
-            
-            msg = f"🔧 **Panels Fixed by {user.mention}!**\n"
-            
-            if grouped_counts:
-                msg += f"Remaining Active: **{active_count}**\n"
-                msg += "**Upcoming Repairs**:\n"
-                # Sort by time?
-                sorted_windows = sorted(grouped_counts.keys())
-                for win in sorted_windows:
-                    msg += f"• **{grouped_counts[win]}** @ {win}\n"
-            elif active_count > 0:
-                 msg += f"Remaining Active: **{active_count}** (All done for now?)"
-            else:
-                msg += "All panels collected! 🔋"
-            
-            if is_reminder:
-                await interaction.response.send_message(msg)
-            else:
-                await interaction.response.send_message(msg, ephemeral=False)
-            
-            await self.update_tracking_message()
-            
+             await self.update_tracking_message()
+             
+             # Group active panels by ETA
+             tz = get_target_timezone()
+             now = datetime.now(tz)
+             
+             active_count = len(self.active_panels)
+             msg = f"🔧 **Panels Maintained by {user.mention}!**\n"
+             
+             if active_count > 0:
+                 msg += f"Active Panels: **{active_count}**\n"
+             else:
+                 msg += "All panels collected! 🔋"
+                 
+             if is_reminder:
+                 await interaction.response.send_message(msg)
+             else:
+                 await interaction.response.send_message(msg, ephemeral=False)
         else:
-            await interaction.response.send_message("❌ No panels eligible for repair right now.", ephemeral=True)
-
+            await interaction.response.send_message("❌ No panels eligible for maintenance/collection right now.", ephemeral=True)
+            
     async def update_tracking_message(self):
         """Helper to update the main persistent message."""
         if self.tracking_message_id:
+            # ... (Existing logic mostly same, just updating display)
             try:
-                # We don't know the channel easily unless we store it or fetch it.
-                # We can try to fetch it from the guild using config channel ID.
                 from src.config import TARGET_CHANNEL_ID
                 channel = self.bot.get_channel(TARGET_CHANNEL_ID)
                 if channel:
                     try:
                         msg = await channel.fetch_message(self.tracking_message_id)
+                        embed = msg.embeds[0]
+                        embed.description = (
+                            f"**Current Status**\n\n"
+                            f"☀️ **Active Panels**: {len(self.active_panels)}\n"
+                            f"🔧 **Fixed (Hour)**: {self.tracking_data['fixed_this_hour']}\n\n"
+                            f"Use buttons below to update."
+                        )
+                        await msg.edit(embed=embed)
                     except discord.NotFound:
                         self.tracking_message_id = None
-                        self.save_stats()
-                        return
-
-                    embed = msg.embeds[0]
-                    embed.description = (
-                        f"**Current Status**\n\n"
-                        f"☀️ **Active Panels**: {len(self.active_panels)}\n"
-                        f"🔧 **Fixed (Hour)**: {self.tracking_data['fixed_this_hour']}\n\n"
-                        f"Use buttons below to update."
-                    )
-                    await msg.edit(embed=embed)
-            except Exception as e:
-                print(f"Failed to update tracking message: {e}")
+            except Exception:
+                pass
 
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction, user):
@@ -404,7 +473,6 @@ class Panels(commands.Cog):
         if now.hour >= 4:
             target_reset_date = now.date().isoformat()
         else:
-            from datetime import timedelta
             target_reset_date = (now.date() - timedelta(days=1)).isoformat()
             
         if self.last_reset_date != target_reset_date:
@@ -493,22 +561,17 @@ class Panels(commands.Cog):
         now = datetime.now(tz)
         present, debug_log = check_traffic_debug(interaction.guild)
         
-        
         # New HoF Logic
         leaderboard = self.hof.get_leaderboard(self.daily_work, self.daily_profit, self.daily_batteries)
         
         # --- Value HoF (Realized Profit) ---
-        # Value is only from collected batteries now
-        
         value_hof_lines = []
         for i, (uid, val, details) in enumerate(leaderboard, 1):
-             # Format: 1. @User: $20000 (Realized Profit)
              if val > 0:
                 value_hof_lines.append(f"{i}. <@{uid}>: **${val}** (Realized Profit)")
         value_hof_str = "\n".join(value_hof_lines) or "None"
 
         # --- Work HoF (Activity Count) ---
-        # Sort by total actions (placed + fixes)
         work_sorted = sorted(leaderboard, key=lambda x: (x[2]['placed'] + x[2]['fixes']), reverse=True)
         work_hof_lines = []
         for i, (uid, _, details) in enumerate(work_sorted, 1):
@@ -519,21 +582,29 @@ class Panels(commands.Cog):
         
         placed_total = sum(d["placed"] for _, _, d in leaderboard)
 
-        # Active Panel Details
+        # Active Panel Details (Real-Time)
         import math
         panel_lines = []
         for p in self.active_panels:
             pid = p['id'][:6]
             pname = p.get('placed_by_name', 'Unknown')
-            rem = p['remaining_minutes']
+            
+            # Use Helper
+            state = self.calculate_panel_state(p)
+            rem = state["remaining_minutes"]
+            delay = state["total_delay"]
             
             # Interactions Logic
             interactions = p.get('interactions', [])
             fixes_done = len([i for i in interactions if i['action'] == 'fix'])
-            fixes_needed = math.ceil(rem / 60)
-            total_fixes = fixes_done + fixes_needed
             
-            panel_lines.append(f"`{pid}` {pname}: {rem}m left ({fixes_done}/{total_fixes} repairs done)")
+            status_text = f"{rem}m left"
+            if delay > 0:
+                status_text += f" ({delay}m delay)"
+            else:
+                status_text += " (On Track)"
+                
+            panel_lines.append(f"`{pid}` {pname}: {status_text} - {fixes_done} fixes")
         panel_str = "\n".join(panel_lines) or "No active panels."
 
         status_msg = (
