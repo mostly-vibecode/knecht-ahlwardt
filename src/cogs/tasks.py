@@ -37,10 +37,28 @@ class BackgroundTasks(commands.Cog):
         
         # Logic Implementation
         
-        # 04:00 - Hard Reset
-        if now.hour == 4 and now.minute == 0:
-            # Weekly Backups
-            if now.weekday() == 0: # Monday
+        # Daily Reset Check
+        archive = panels_cog.check_daily_reset()
+        if archive:
+            # Generate Report
+            leaderboard = panels_cog.hof.get_leaderboard(archive["work"], archive["profit"], archive["batteries"])
+            
+            hof_lines = []
+            for i, (uid, val, details) in enumerate(leaderboard, 1):
+                 hof_lines.append(f"{i}. <@{uid}>: **${val}** (P:{details['placed']} F:{details['fixes']} B:{details['batteries']})")
+            hof_str = "\n".join(hof_lines) or "None"
+
+            placed_daily = sum(archive["work"]["placed"].values())
+
+            summary = (
+                f"ℹ️ **Daily Report & Server Restart** ({archive['date']})\n"
+                f"☀️ Panels Placed: {placed_daily}\n"
+                f"🏆 **Profit HoF**:\n{hof_str}\n"
+            )
+            await target_channel.send(summary)
+
+            # Weekly Backup (Monday)
+            if now.weekday() == 0: 
                 backup_channel = self.bot.get_channel(BACKUP_CHANNEL_ID)
                 if backup_channel:
                     file = panels_cog.export_stats_file()
@@ -48,28 +66,8 @@ class BackgroundTasks(commands.Cog):
                         await backup_channel.send(f"📦 **Weekly Backup** ({now.strftime('%Y-%m-%d')})", file=file)
                 else:
                     print(f"Warning: Backup channel {BACKUP_CHANNEL_ID} not found.")
-
-            # Daily Stats Report
-            # Daily Stats Report
-            leaderboard = panels_cog.get_leaderboard()
             
-            hof_lines = []
-            for i, (uid, val, details) in enumerate(leaderboard, 1):
-                 hof_lines.append(f"{i}. <@{uid}>: **${val}** (P:{details['placed']} F:{details['fixes']} B:{details['batteries']})")
-            hof_str = "\n".join(hof_lines) or "None"
-
-            placed_daily = sum(panels_cog.daily_stats["placed"].values())
-
-            summary = (
-                f"ℹ️ **Daily Report & Server Restart**\n"
-                f"☀️ Panels Placed: {placed_daily}\n"
-                f"🏆 **Performance HoF**:\n{hof_str}\n"
-            )
-            await target_channel.send(summary)
-
-            # Reset Stats
-            panels_cog.tracking_data["fixed_this_hour"] = 0
-            panels_cog.reset_daily_stats()
+            # Reset is already done by check_daily_reset
             return
 
         # XX:30 - Reset "Fixed" status for hour

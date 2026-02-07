@@ -1,13 +1,6 @@
 {
-    "_comment": "Values are in Dollars ($). These amounts are added to the user's Hall of Fame score.",
-    "panels": {
-        "place": 10000,
-        "fix": 10000
-    },
-    "batteries": {
-        "collect": 20000
-    },
-    "platzhalter": {
-        "action": 10000
-    }
+    "_comment": "Values are in Dollars ($).",
+    "place_value": 10000,
+    "fix_value": 10000,
+    "battery_value": 0
 }

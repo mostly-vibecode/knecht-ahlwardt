@@ -4,7 +4,11 @@ import os
 class HallOfFame:
     def __init__(self, mechanics_file="data/mechanics.json"):
         self.mechanics_file = mechanics_file
-        self.mechanics = { "panels": {"place": 100, "fix": 50}, "batteries": {"collect": 200} } # Defaults
+        # Defaults if file missing
+        self.mechanics = { 
+            "place_value": 10000, 
+            "fix_value": 10000 
+        } 
         self.load_mechanics()
 
     def load_mechanics(self):
@@ -16,38 +20,28 @@ class HallOfFame:
             except Exception as e:
                 print(f"Error loading mechanics: {e}")
 
-    def get_user_value(self, user_id, daily_stats, daily_batteries):
-        """Calculate total value ($) for a user."""
-        total = 0
-        user_id = str(user_id)
+    def get_leaderboard(self, daily_work, daily_profit, daily_batteries):
+        """
+        Return a sorted list of (user_id, total_value, details_dict).
         
-        # Panels Placed
-        places = daily_stats["placed"].get(user_id, 0)
-        total += places * self.mechanics.get("panels", {}).get("place", 0)
-        
-        # Panels Fixed
-        fixes = daily_stats["fixes"].get(user_id, 0)
-        total += fixes * self.mechanics.get("panels", {}).get("fix", 0)
-        
-        # Batteries Collected
-        batteries = daily_batteries.get(user_id, 0)
-        total += batteries * self.mechanics.get("batteries", {}).get("collect", 0)
-        
-        return total
-
-    def get_leaderboard(self, daily_stats, daily_batteries):
-        """Return a sorted list of (user_id, total_value, details_dict)."""
+        daily_work: { "placed": {uid: count}, "fixes": {uid: count} }
+        daily_profit: { uid: amount }
+        daily_batteries: { uid: count }
+        """
         users = set()
-        users.update(daily_stats["placed"].keys())
-        users.update(daily_stats["fixes"].keys())
+        users.update(daily_work["placed"].keys())
+        users.update(daily_work["fixes"].keys())
+        users.update(daily_profit.keys())
         users.update(daily_batteries.keys())
         
         leaderboard = []
         for uid in users:
-            val = self.get_user_value(uid, daily_stats, daily_batteries)
+            # Value is now pre-calculated (Realized Profit)
+            val = daily_profit.get(uid, 0)
+            
             details = {
-                "placed": daily_stats["placed"].get(uid, 0),
-                "fixes": daily_stats["fixes"].get(uid, 0),
+                "placed": daily_work["placed"].get(uid, 0),
+                "fixes": daily_work["fixes"].get(uid, 0),
                 "batteries": daily_batteries.get(uid, 0)
             }
             leaderboard.append((uid, val, details))

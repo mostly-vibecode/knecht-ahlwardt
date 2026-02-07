@@ -34,10 +34,20 @@ class Panels(commands.Cog):
         self.active_panels = [] # List of panel objects
         self.daily_batteries = {} # { user_id: count }
         
-        self.daily_stats = {
+        self.daily_work = {
             "placed": {}, # { user_id: count }
             "fixes": {}   # { user_id: count }
         }
+        self.daily_profit = {} # { user_id: amount }
+        self.daily_batteries = {} # { user_id: count }
+        
+        self.lifetime_profit = {} # { user_id: amount }
+        self.lifetime_work = {
+             "placed": {},
+             "fixes": {}
+        }
+        self.history = [] # List of archived daily stats
+        self.last_reset_date = None
         self.tracking_message_id = None
         self.data_file = "data/panels.json"
         
@@ -54,6 +64,8 @@ class Panels(commands.Cog):
     async def cog_load(self):
         """Register persistent views on load."""
         self.bot.add_view(ReminderView(self))
+        # Ensure reset check happens on load
+        self.check_daily_reset()
         
     def load_settings(self):
         """Load settings from JSON."""
@@ -71,7 +83,12 @@ class Panels(commands.Cog):
                 data = {
                     "active_panels": self.active_panels,
                     "daily_batteries": self.daily_batteries,
-                    "daily_stats": self.daily_stats,
+                    "daily_work": self.daily_work,
+                    "daily_profit": self.daily_profit,
+                    "lifetime_profit": self.lifetime_profit,
+                    "lifetime_work": self.lifetime_work,
+                    "history": self.history,
+                    "last_reset_date": self.last_reset_date,
                     "tracking_message_id": self.tracking_message_id
                 }
                 json.dump(data, f, indent=4)
@@ -90,43 +107,40 @@ class Panels(commands.Cog):
                 # Load active panels
                 self.active_panels = data.get("active_panels", [])
                 
-                # Load batteries (key conversion)
-                if "daily_batteries" in data:
-                    self.daily_batteries = {str(k): v for k, v in data["daily_batteries"].items()}
-                else:
-                    self.daily_batteries = {}
-                    
-                # Load stats
+                self.daily_batteries = {str(k): v for k, v in data.get("daily_batteries", {}).items()}
+                
+                # Load Work/Profit
+                # Migration from old daily_stats to daily_work if needed
                 if "daily_stats" in data:
-                    stats = data["daily_stats"]
-                    
-                    # Migration: Check 'placed' type
-                    if "placed" in stats:
-                        if isinstance(stats["placed"], int):
-                            print(f"[Migration] Converting 'placed' from int ({stats['placed']}) to dict.")
-                            stats["placed"] = {} 
-                        else:
-                            stats["placed"] = {str(k): v for k, v in stats["placed"].items()}
-                    else:
-                        stats["placed"] = {}
-
-                    if "fixes" in stats:
-                        stats["fixes"] = {str(k): v for k, v in stats["fixes"].items()}
-                    
-                    self.daily_stats = stats
+                    self.daily_work = data["daily_stats"]
+                    if "placed" in self.daily_work and isinstance(self.daily_work["placed"], int):
+                         self.daily_work["placed"] = {} # Hard reset invalid type
                 else:
-                    # Legacy support/Fall back
-                    if "fixes" in data: # Old format was just daily_stats
-                        self.daily_stats = {
-                            "placed": {},
-                            "fixes": {str(k): v for k, v in data["fixes"].items()}
-                        }
+                    self.daily_work = data.get("daily_work", { "placed": {}, "fixes": {} })
+                    # Type safety keys
+                    self.daily_work["placed"] = {str(k): v for k, v in self.daily_work.get("placed", {}).items()}
+                    self.daily_work["fixes"] = {str(k): v for k, v in self.daily_work.get("fixes", {}).items()}
+
+                self.daily_profit = {str(k): v for k, v in data.get("daily_profit", {}).items()}
+                self.lifetime_profit = {str(k): v for k, v in data.get("lifetime_profit", {}).items()}
+                
+                # Lifetime Work
+                lw = data.get("lifetime_work", { "placed": {}, "fixes": {} })
+                self.lifetime_work = {
+                    "placed": {str(k): v for k, v in lw.get("placed", {}).items()},
+                    "fixes": {str(k): v for k, v in lw.get("fixes", {}).items()}
+                }
+
+                self.history = data.get("history", [])
+                self.last_reset_date = data.get("last_reset_date")
 
                 # Load tracking message ID
                 self.tracking_message_id = data.get("tracking_message_id")
                         
         except Exception as e:
-            print(f"Error loading stats: {e}")
+            print(f"Error loading stats: {e}") 
+            import traceback
+            traceback.print_exc()
 
 
     def process_place(self, user):
@@ -141,15 +155,24 @@ class Panels(commands.Cog):
             "placed_by": user.id,
             "placed_by_name": user.display_name,
             "placed_at_iso": now.isoformat(),
-            "remaining_minutes": liveduration
+            "remaining_minutes": liveduration,
+            "interactions": [] 
         }
         
-        self.active_panels.append(panel)
+        # Add Interaction
+        panel["interactions"].append({
+            "user_id": str(user.id),
+            "action": "place",
+            "timestamp": now.isoformat()
+        })
         
-        # Update Daily Stats (Placed)
-        if str(user.id) not in self.daily_stats["placed"]:
-            self.daily_stats["placed"][str(user.id)] = 0
-        self.daily_stats["placed"][str(user.id)] += 1
+        self.active_panels.append(panel)
+        self.check_daily_reset() # Check before modifying stats
+
+        # Update Daily Work (Placed)
+        if str(user.id) not in self.daily_work["placed"]:
+            self.daily_work["placed"][str(user.id)] = 0
+        self.daily_work["placed"][str(user.id)] += 1
         
         self.save_stats()
         return panel
@@ -189,6 +212,8 @@ class Panels(commands.Cog):
         collected_count = 0
         
         # Identify eligible panels
+        self.check_daily_reset()
+        
         for panel in self.active_panels:
             placed_dt = datetime.fromisoformat(panel["placed_at_iso"])
             
@@ -201,14 +226,48 @@ class Panels(commands.Cog):
             if is_eligible:
                 eligible_count += 1
                 panel["remaining_minutes"] -= 60
+                
+                # Record Interaction
+                # Verify we haven't already fixed this hour? 
+                # (Simple logic: if eligible, we fix. We rely on calling logic not to spam fix)
+                # But wait, if multiple people fix? We can't prevent it easily without more state.
+                # For now, we assume one fix event processes all eligible panels for the user.
+                
+                panel["interactions"].append({
+                    "user_id": str(user.id),
+                    "action": "fix",
+                    "timestamp": now.isoformat()
+                })
+
                 if panel["remaining_minutes"] <= 0:
                     collected_count += 1
         
-        # Remove collected panels
+        new_active_panels = []
+        for panel in self.active_panels:
+            if panel["remaining_minutes"] > 0:
+                new_active_panels.append(panel)
+            else:
+                # PAYOUT LOGIC
+                # Distribute value based on interactions
+                for interaction in panel.get("interactions", []):
+                    # "place" or "fix"
+                    action_type = interaction["action"]
+                    uid = interaction["user_id"]
+                    
+                    # Resolve Value
+                    val = 0
+                    if action_type == "place":
+                        val = self.hof.mechanics.get("place_value", 10000)
+                    elif action_type == "fix":
+                        val = self.hof.mechanics.get("fix_value", 10000)
+                        
+                    if val > 0:
+                        self.daily_profit[uid] = self.daily_profit.get(uid, 0) + val
+
+        self.active_panels = new_active_panels
+
+        # Update Battery Counts (User who triggered collection)
         if collected_count > 0:
-            self.active_panels = [p for p in self.active_panels if p["remaining_minutes"] > 0]
-            
-            # Award Batteries
             if str(user.id) not in self.daily_batteries:
                 self.daily_batteries[str(user.id)] = 0
             self.daily_batteries[str(user.id)] += collected_count
@@ -216,10 +275,10 @@ class Panels(commands.Cog):
         if eligible_count > 0:
             self.tracking_data["fixed_this_hour"] += 1 
             
-            # Update Daily Fixes (HoF)
-            if str(user.id) not in self.daily_stats["fixes"]:
-                self.daily_stats["fixes"][str(user.id)] = 0
-            self.daily_stats["fixes"][str(user.id)] += 1
+            # Update Daily Fixes (Work)
+            if str(user.id) not in self.daily_work["fixes"]:
+                self.daily_work["fixes"][str(user.id)] = 0
+            self.daily_work["fixes"][str(user.id)] += 1
             
             self.save_stats()
             
@@ -334,15 +393,70 @@ class Panels(commands.Cog):
                 # Just update tracking
                 await self.update_tracking_message()
 
-    def reset_daily_stats(self):
-        """Reset daily stats and save."""
-        self.daily_stats = {
+    def check_daily_reset(self):
+        """Check if we passed 04:00 and need to reset."""
+        tz = get_target_timezone()
+        now = datetime.now(tz)
+        
+        if now.hour >= 4:
+            target_reset_date = now.date().isoformat()
+        else:
+            from datetime import timedelta
+            target_reset_date = (now.date() - timedelta(days=1)).isoformat()
+            
+        if self.last_reset_date != target_reset_date:
+            print(f"[Reset] Triggering Daily Reset. Last: {self.last_reset_date}, Target: {target_reset_date}")
+            return self.reset_daily_stats(target_reset_date)
+        return None
+
+    def reset_daily_stats(self, new_date_str=None):
+        """Reset daily stats and save. Returns the archive entry."""
+        
+        archive_entry = None
+        
+        # 1. Archive
+        if self.daily_work["placed"] or self.daily_work["fixes"] or self.daily_profit:
+             archive_entry = {
+                 "date": self.last_reset_date or "Unknown",
+                 "work": self.daily_work,
+                 "profit": self.daily_profit,
+                 "batteries": self.daily_batteries
+             }
+             self.history.append(archive_entry)
+        
+        # 2. Aggregate Lifetime
+        for uid, count in self.daily_work["placed"].items():
+            if str(uid) not in self.lifetime_work["placed"]: self.lifetime_work["placed"][str(uid)] = 0
+            self.lifetime_work["placed"][str(uid)] += count
+            
+        for uid, count in self.daily_work["fixes"].items():
+            if str(uid) not in self.lifetime_work["fixes"]: self.lifetime_work["fixes"][str(uid)] = 0
+            self.lifetime_work["fixes"][str(uid)] += count
+            
+        for uid, val in self.daily_profit.items():
+            if str(uid) not in self.lifetime_profit: self.lifetime_profit[str(uid)] = 0
+            self.lifetime_profit[str(uid)] += val
+
+        # 3. Clear Current
+        self.daily_work = {
             "placed": {},
             "fixes": {}
         }
+        self.daily_profit = {}
         self.daily_batteries = {}
-        # NOTE: We do NOT clear active_panels on daily reset, they persist until fixed!
+        
+        # CRITICAL: CLEAR ACTIVES
+        self.active_panels = []
+        
+        # Update Reset Date
+        if new_date_str:
+            self.last_reset_date = new_date_str
+        else:
+             tz = get_target_timezone()
+             self.last_reset_date = datetime.now(tz).date().isoformat() # Fallback
+
         self.save_stats()
+        return archive_entry
 
     def export_stats_file(self):
         """Return the stats file as a discord.File object."""
@@ -378,7 +492,7 @@ class Panels(commands.Cog):
         
         
         # New HoF Logic
-        leaderboard = self.hof.get_leaderboard(self.daily_stats, self.daily_batteries)
+        leaderboard = self.hof.get_leaderboard(self.daily_work, self.daily_profit, self.daily_batteries)
         
         # Build String
         hof_lines = []
@@ -402,7 +516,7 @@ class Panels(commands.Cog):
 
     @app_commands.command(name='panels_hof', description="Show the Daily Hall of Fame ($).")
     async def panels_hof(self, interaction: discord.Interaction):
-        leaderboard = self.hof.get_leaderboard(self.daily_stats, self.daily_batteries)
+        leaderboard = self.hof.get_leaderboard(self.daily_work, self.daily_profit, self.daily_batteries)
         
         if not leaderboard:
             await interaction.response.send_message("🏆 **Hall of Fame**: No activity recorded today.", ephemeral=True)
