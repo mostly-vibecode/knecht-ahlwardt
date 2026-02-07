@@ -662,10 +662,22 @@ class Knecht(commands.Cog):
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.CheckFailure):
-            if isinstance(error, app_commands.MissingRole):
-                await interaction.response.send_message(f"❌ You do not have the required role: **{error.missing_role[0]}**", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            try:
+                # Determine how to respond based on interaction state
+                if interaction.response.is_done():
+                    reply = interaction.followup.send
+                else:
+                    reply = interaction.response.send_message
+                
+                if isinstance(error, app_commands.MissingRole):
+                    await reply(f"❌ You do not have the required role: **{error.missing_role[0]}**", ephemeral=True)
+                else:
+                    await reply("❌ You do not have permission to use this command.", ephemeral=True)
+            except discord.NotFound:
+                # Interaction likely timed out or is invalid
+                print(f"[Error Handler] Interaction not found (timeout?): {error}")
+            except Exception as e:
+                print(f"[Error Handler] Failed to send error response: {e}")
         else:
              print(f"App Command Error: {error}")
 
