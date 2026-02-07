@@ -24,4 +24,7 @@ class AhlwardtBot(commands.Bot):
             print(f"Synced commands to guild {TARGET_GUILD_ID}")
 
     async def on_ready(self):
-        print(f'Logged in as {self.user.name}')
+        import uuid
+        session_id = str(uuid.uuid4())[:8]
+        print(f'Logged in as {self.user.name} (Session ID: {session_id})')
+        print(f'WARNING: If you see multiple Session IDs in logs, run only ONE instance!')

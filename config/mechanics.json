@@ -1,4 +1,8 @@
 {
     "_comment": "Values are in Dollars ($).",
-    "battery_value": 50000
+    "place_value": 10000,
+    "fix_value": 10000,
+    "battery_value": 50000,
+    "wertvoller_container": 90000,
+    "hafendrop": 24000
 }

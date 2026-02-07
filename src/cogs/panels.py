@@ -557,6 +557,7 @@ class Panels(commands.Cog):
 
     @app_commands.command(name='panels_status', description="Debug traffic and logic.")
     async def panels_status(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         tz = get_target_timezone()
         now = datetime.now(tz)
         present, debug_log = check_traffic_debug(interaction.guild)
@@ -619,7 +620,7 @@ class Panels(commands.Cog):
             f"**🔨 Work HoF**:\n{work_hof_str}\n\n"
             f"**Debug Log**:\n```{debug_log}```"
         )
-        await interaction.response.send_message(status_msg, ephemeral=True)
+        await interaction.followup.send(status_msg, ephemeral=True)
 
     @app_commands.command(name='panels_hof', description="Show the Daily Hall of Fame ($).")
     async def panels_hof(self, interaction: discord.Interaction):
