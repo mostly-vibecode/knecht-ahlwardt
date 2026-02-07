@@ -328,7 +328,20 @@ class Knecht(commands.Cog):
             if remaining <= 0:
                 is_eligible = True # Collect
             elif is_maintenance_window:
-                is_eligible = True # Maintain
+                # Check for duplicate fix in this window
+                already_fixed = False
+                window_start = now.replace(minute=30, second=0, microsecond=0)
+                window_end = now.replace(minute=59, second=59, microsecond=999999)
+                
+                for i in panel.get("interactions", []):
+                    if i["action"] == "fix" and i["user_id"] == str(user.id):
+                        i_time = datetime.fromisoformat(i["timestamp"])
+                        if window_start <= i_time <= window_end:
+                            already_fixed = True
+                            break
+                            
+                if not already_fixed:
+                    is_eligible = True # Maintain
             
             if is_eligible:
                 eligible_count += 1
