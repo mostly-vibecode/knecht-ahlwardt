@@ -12,7 +12,7 @@ class AhlwardtBot(commands.Bot):
 
     async def setup_hook(self):
         # Load extensions
-        start_extensions = ['src.cogs.panels', 'src.cogs.tasks']
+        start_extensions = ['src.cogs.knecht', 'src.cogs.tasks']
         for extension in start_extensions:
             await self.load_extension(extension)
 

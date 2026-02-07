@@ -31,6 +31,8 @@ class HallOfFame:
         users = set()
         users.update(daily_work["placed"].keys())
         users.update(daily_work["fixes"].keys())
+        users.update(daily_work["containers"].keys())
+        users.update(daily_work["hafenevents"].keys())
         users.update(daily_profit.keys())
         users.update(daily_batteries.keys())
         
@@ -42,6 +44,8 @@ class HallOfFame:
             details = {
                 "placed": daily_work["placed"].get(uid, 0),
                 "fixes": daily_work["fixes"].get(uid, 0),
+                "containers": daily_work["containers"].get(uid, 0),
+                "hafenevents": daily_work["hafenevents"].get(uid, 0),
                 "batteries": daily_batteries.get(uid, 0)
             }
             leaderboard.append((uid, val, details))
