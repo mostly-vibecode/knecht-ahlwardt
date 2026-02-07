@@ -29,19 +29,19 @@ class BackgroundTasks(commands.Cog):
             return
         self.last_checked_minute = now.minute
 
-        # Get Panels cog for state
-        panels_cog = self.bot.get_cog("Panels")
-        if not panels_cog:
-            print("Warning: Panels cog not found. Skipping logic involving state.")
+        # Get Knecht cog for state
+        knecht_cog = self.bot.get_cog("Knecht")
+        if not knecht_cog:
+            print("Warning: Knecht cog not found. Skipping logic involving state.")
             return
         
         # Logic Implementation
         
         # Daily Reset Check
-        archive = panels_cog.check_daily_reset()
+        archive = knecht_cog.check_daily_reset()
         if archive:
             # Generate Report
-            leaderboard = panels_cog.hof.get_leaderboard(archive["work"], archive["profit"], archive["batteries"])
+            leaderboard = knecht_cog.hof.get_leaderboard(archive["work"], archive["profit"], archive["batteries"])
             
             hof_lines = []
             for i, (uid, val, details) in enumerate(leaderboard, 1):
@@ -61,7 +61,7 @@ class BackgroundTasks(commands.Cog):
             if now.weekday() == 0: 
                 backup_channel = self.bot.get_channel(BACKUP_CHANNEL_ID)
                 if backup_channel:
-                    file = panels_cog.export_stats_file()
+                    file = knecht_cog.export_stats_file()
                     if file:
                         await backup_channel.send(f"📦 **Weekly Backup** ({now.strftime('%Y-%m-%d')})", file=file)
                 else:
@@ -72,8 +72,8 @@ class BackgroundTasks(commands.Cog):
 
         # XX:30 - Reset "Fixed" status for hour
         if now.minute == 30:
-            if panels_cog.tracking_data["fixed_this_hour"] > 0:
-                panels_cog.tracking_data["fixed_this_hour"] = 0
+            if knecht_cog.tracking_data["fixed_this_hour"] > 0:
+                knecht_cog.tracking_data["fixed_this_hour"] = 0
             return
 
         # Reminders: XX:31, XX:45, XX:50, XX:55
@@ -89,7 +89,7 @@ class BackgroundTasks(commands.Cog):
             # Check Logic
             # Count eligible panels
             eligible_count = 0
-            for panel in panels_cog.active_panels:
+            for panel in knecht_cog.active_panels:
                 placed_dt = datetime.fromisoformat(panel["placed_at_iso"])
                 is_eligible = False
                 if placed_dt.hour != now.hour or placed_dt.date() != now.date():
@@ -100,13 +100,14 @@ class BackgroundTasks(commands.Cog):
                 if is_eligible:
                     eligible_count += 1
             
-            if eligible_count > 0 and panels_cog.tracking_data["fixed_this_hour"] == 0:
+            if eligible_count > 0 and knecht_cog.tracking_data["fixed_this_hour"] == 0:
                 mentions = [m.mention for m in valid_players]
                 mention_str = ", ".join(mentions)
                 
                 # Import view safely
-                from src.cogs.panels import ReminderView
-                view = ReminderView(panels_cog)
+                # Import view safely
+                from src.cogs.knecht import KnechtView
+                view = KnechtView(knecht_cog)
                 
                 await target_channel.send(
                     f"⚠️ {mention_str} Panels placed but not fixed! (Time: {now.strftime('%H:%M')})", 
