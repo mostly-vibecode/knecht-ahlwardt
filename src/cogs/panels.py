@@ -247,22 +247,25 @@ class Panels(commands.Cog):
             if panel["remaining_minutes"] > 0:
                 new_active_panels.append(panel)
             else:
-                # PAYOUT LOGIC
+                # PAYOUT LOGIC (On Collection Only)
                 # Distribute value based on interactions
-                for interaction in panel.get("interactions", []):
-                    # "place" or "fix"
-                    action_type = interaction["action"]
-                    uid = interaction["user_id"]
+                interactions = panel.get("interactions", [])
+                total_interactions = len(interactions)
+                
+                if total_interactions > 0:
+                    battery_val = self.hof.mechanics.get("battery_value", 50000)
                     
-                    # Resolve Value
-                    val = 0
-                    if action_type == "place":
-                        val = self.hof.mechanics.get("place_value", 10000)
-                    elif action_type == "fix":
-                        val = self.hof.mechanics.get("fix_value", 10000)
+                    # Count interactions per user
+                    user_counts = {}
+                    for i in interactions:
+                        uid = i["user_id"]
+                        user_counts[uid] = user_counts.get(uid, 0) + 1
                         
-                    if val > 0:
-                        self.daily_profit[uid] = self.daily_profit.get(uid, 0) + val
+                    # Distribute
+                    for uid, count in user_counts.items():
+                        share = int((count / total_interactions) * battery_val)
+                        if share > 0:
+                             self.daily_profit[uid] = self.daily_profit.get(uid, 0) + share
 
         self.active_panels = new_active_panels
 
@@ -494,22 +497,14 @@ class Panels(commands.Cog):
         # New HoF Logic
         leaderboard = self.hof.get_leaderboard(self.daily_work, self.daily_profit, self.daily_batteries)
         
-        # --- Value HoF (Detail) ---
-        p_val = self.hof.mechanics.get("place_value", 0)
-        f_val = self.hof.mechanics.get("fix_value", 0)
-        b_val = self.hof.mechanics.get("battery_value", 0)
+        # --- Value HoF (Realized Profit) ---
+        # Value is only from collected batteries now
         
         value_hof_lines = []
         for i, (uid, val, details) in enumerate(leaderboard, 1):
-             # Format: 1. @User: $20000 (3 P * $1000 + 1 F * $1000)
-             # Abbreviations: P=Place, F=Fix, B=Battery
-             parts = []
-             if details['placed'] > 0: parts.append(f"{details['placed']}P*${p_val}")
-             if details['fixes'] > 0: parts.append(f"{details['fixes']}F*${f_val}")
-             if details['batteries'] > 0: parts.append(f"{details['batteries']}B*${b_val}")
-             calc_str = " + ".join(parts) or "No Value Actions"
-             
-             value_hof_lines.append(f"{i}. <@{uid}>: **${val}** ({calc_str})")
+             # Format: 1. @User: $20000 (Realized Profit)
+             if val > 0:
+                value_hof_lines.append(f"{i}. <@{uid}>: **${val}** (Realized Profit)")
         value_hof_str = "\n".join(value_hof_lines) or "None"
 
         # --- Work HoF (Activity Count) ---
