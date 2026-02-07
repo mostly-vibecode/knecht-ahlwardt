@@ -8,6 +8,7 @@ import uuid
 from src.utils.helpers import get_target_timezone
 from src.utils.traffic import check_traffic_debug
 from src.utils.hof import HallOfFame
+from src.utils.permissions import check_permissions
 
 
 class KnechtView(discord.ui.View):
@@ -532,6 +533,7 @@ class Knecht(commands.Cog):
     # --- Commands ---
 
     @app_commands.command(name='knecht_add', description="Show the main Knecht control dashboard.")
+    @check_permissions()
     async def knecht_add(self, interaction: discord.Interaction):
         # Update logic to include new mechanics in description
         containers_today = sum(self.daily_work['containers'].values())
@@ -557,12 +559,14 @@ class Knecht(commands.Cog):
 
 
     @app_commands.command(name='knecht_clear_panels', description="Reset active panels count to 0 (Debug only).")
+    @check_permissions()
     async def knecht_clear_panels(self, interaction: discord.Interaction):
         self.active_panels = []
         self.save_stats()
         await interaction.response.send_message("✅ Active panels cleared (Debug).")
 
     @app_commands.command(name='knecht_status', description="Debug traffic and logic.")
+    @check_permissions()
     async def knecht_status(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         tz = get_target_timezone()
@@ -623,6 +627,7 @@ class Knecht(commands.Cog):
         await interaction.followup.send(status_msg, ephemeral=True)
 
     @app_commands.command(name='knecht_hof', description="Show the Daily Hall of Fame ($).")
+    @check_permissions()
     async def knecht_hof(self, interaction: discord.Interaction):
         leaderboard = self.hof.get_leaderboard(self.daily_work, self.daily_profit, self.daily_batteries)
         
@@ -641,19 +646,29 @@ class Knecht(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name='knecht_reset', description="[ADMIN] Reset all daily stats manually.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @check_permissions()
     async def knecht_reset(self, interaction: discord.Interaction):
         self.reset_daily_stats()
         await interaction.response.send_message("✅ Daily stats have been reset.", ephemeral=True)
 
     @app_commands.command(name='knecht_export', description="[ADMIN] Export the current stats JSON.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @check_permissions()
     async def knecht_export(self, interaction: discord.Interaction):
         file = self.export_stats_file()
         if file:
             await interaction.response.send_message("📦 Here is the current `knecht_backup.json`:", file=file, ephemeral=True)
         else:
             await interaction.response.send_message("❌ No stats file found.", ephemeral=True)
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.CheckFailure):
+            if isinstance(error, app_commands.MissingRole):
+                await interaction.response.send_message(f"❌ You do not have the required role: **{error.missing_role[0]}**", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+        else:
+             print(f"App Command Error: {error}")
+
 
 async def setup(bot):
     await bot.add_cog(Knecht(bot))
