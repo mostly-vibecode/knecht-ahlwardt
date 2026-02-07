@@ -54,11 +54,11 @@ class Panels(commands.Cog):
         # Ensure data directory exists
         os.makedirs(os.path.dirname(self.data_file), exist_ok=True)
         
-        self.settings_file = "data/settings.json"
+        self.settings_file = "config/settings.json"
         self.settings = {"panel_liveduration": 60}
         self.load_settings()
 
-        self.hof = HallOfFame("data/mechanics.json")
+        self.hof = HallOfFame("config/mechanics.json")
         self.load_stats()
 
     async def cog_load(self):

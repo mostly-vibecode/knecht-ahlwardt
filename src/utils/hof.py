@@ -2,7 +2,7 @@ import json
 import os
 
 class HallOfFame:
-    def __init__(self, mechanics_file="data/mechanics.json"):
+    def __init__(self, mechanics_file="config/mechanics.json"):
         self.mechanics_file = mechanics_file
         # Defaults if file missing
         self.mechanics = { 
