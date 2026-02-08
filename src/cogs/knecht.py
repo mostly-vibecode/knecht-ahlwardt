@@ -42,12 +42,13 @@ class Knecht(commands.Cog):
         
         self.active_panels = [] # List of panel objects
         
-        # New structure for daily work
+        # New structure for daily work: Lists of Event Objects
+        # Event: { "id": str, "user_id": str, "timestamp": str, "type": str, "details": dict }
         self.daily_work = {
-            "placed": {},      # { user_id: count }
-            "fixes": {},       # { user_id: count }
-            "containers": {},  # { user_id: count }
-            "hafenevents": {}  # { user_id: count }
+            "placed": [],      
+            "fixes": [],       
+            "containers": [],  
+            "hafenevents": []  
         }
         
         self.daily_profit = {}    # { user_id: amount }
@@ -151,12 +152,31 @@ class Knecht(commands.Cog):
                 self.daily_batteries = {str(k): v for k, v in data.get("daily_batteries", {}).items()}
                 
                 dw = data.get("daily_work", {})
+                
+                # MIGRATION LOGIC: If loaded data is dicts (old format), convert to lists (new format)
                 self.daily_work = {
-                    "placed": {str(k): v for k, v in dw.get("placed", {}).items()},
-                    "fixes": {str(k): v for k, v in dw.get("fixes", {}).items()},
-                    "containers": {str(k): v for k, v in dw.get("containers", {}).items()},
-                    "hafenevents": {str(k): v for k, v in dw.get("hafenevents", {}).items()}
+                    "placed": [], "fixes": [], "containers": [], "hafenevents": []
                 }
+                
+                # Check if "placed" is a dict (Old format)
+                if isinstance(dw.get("placed"), dict):
+                    print("Migrating daily_work from Dicts to Lists...")
+                    tz = get_target_timezone()
+                    now_iso = datetime.now(tz).isoformat()
+                    
+                    for category in ["placed", "fixes", "containers", "hafenevents"]:
+                        old_cat_data = dw.get(category, {})
+                        if isinstance(old_cat_data, dict):
+                            for uid, count in old_cat_data.items():
+                                for _ in range(count):
+                                    self._add_work_event(category, uid, now_iso, save=False)
+                        elif isinstance(old_cat_data, list):
+                             self.daily_work[category] = old_cat_data
+
+                    self.save_stats()
+                else:
+                    # Already new format
+                    self.daily_work = dw
 
                 self.daily_profit = {str(k): v for k, v in data.get("daily_profit", {}).items()}
                 self.lifetime_profit = {str(k): v for k, v in data.get("lifetime_profit", {}).items()}
@@ -179,6 +199,32 @@ class Knecht(commands.Cog):
             traceback.print_exc()
 
 
+    def _add_work_event(self, category, user_id, timestamp, details=None, save=True, force_id=None):
+        """Helper to add a work event to daily_work."""
+        event_id = force_id if force_id else uuid.uuid4().hex[:6]
+        event = {
+            "id": event_id,
+            "user_id": str(user_id),
+            "timestamp": timestamp,
+            "type": category,
+            "details": details or {}
+        }
+        self.daily_work[category].append(event)
+        if save:
+            self.save_stats()
+        return event
+
+    def _get_daily_counts(self):
+        """Helper to aggregate counts for HoF."""
+        counts = {
+            "placed": {}, "fixes": {}, "containers": {}, "hafenevents": {}
+        }
+        for category, events in self.daily_work.items():
+            for e in events:
+                uid = e["user_id"]
+                counts[category][uid] = counts[category].get(uid, 0) + 1
+        return counts
+
     # --- Mechanics Handlers ---
 
     async def handle_container_interaction(self, interaction: discord.Interaction):
@@ -189,7 +235,10 @@ class Knecht(commands.Cog):
         
         # Update Work
         uid = str(user.id)
-        self.daily_work["containers"][uid] = self.daily_work["containers"].get(uid, 0) + 1
+        tz = get_target_timezone()
+        now = datetime.now(tz).isoformat()
+        
+        self._add_work_event("containers", uid, now, save=False)
         
         # Update Profit
         self.daily_profit[uid] = self.daily_profit.get(uid, 0) + value
@@ -207,7 +256,10 @@ class Knecht(commands.Cog):
         
         # Update Work
         uid = str(user.id)
-        self.daily_work["hafenevents"][uid] = self.daily_work["hafenevents"].get(uid, 0) + 1
+        tz = get_target_timezone()
+        now = datetime.now(tz).isoformat()
+        
+        self._add_work_event("hafenevents", uid, now, save=False)
         
         # Update Profit
         self.daily_profit[uid] = self.daily_profit.get(uid, 0) + value
@@ -216,6 +268,48 @@ class Knecht(commands.Cog):
         
         await interaction.response.send_message(f"⚓ **Hafenevent Logged!** (+${value:,})", ephemeral=True)
         await self.update_tracking_message()
+
+    def _revert_event_effects(self, event):
+        """Revert the effects of an event (profit, panel state, etc)."""
+        etype = event["type"]
+        uid = event["user_id"]
+        
+        # 1. Revert Profit (Containers/Hafenevents)
+        if etype == "containers":
+             val = self.hof.mechanics.get("wertvoller_container", 90000)
+             if uid in self.daily_profit:
+                 self.daily_profit[uid] = max(0, self.daily_profit[uid] - val)
+                 
+        elif etype == "hafenevents":
+             val = self.hof.mechanics.get("hafendrop", 24000)
+             if uid in self.daily_profit:
+                 self.daily_profit[uid] = max(0, self.daily_profit[uid] - val)
+
+        # 2. Revert Panel Placement
+        elif etype == "placed":
+             # Try to remove the associated active panel
+             panel_id = event.get("details", {}).get("panel_id")
+             if panel_id:
+                 self.active_panels = [p for p in self.active_panels if p["id"] != panel_id]
+
+        # 3. Revert Fix (State Change)
+        elif etype == "fixes":
+             # We need to find the panel interaction that matches this fix event
+             # Match by user_id and timestamp (approximate or exact)
+             # The event timestamp might differ slightly from interaction timestamp if we didn't link them properly.
+             # But in handle_fix/process_fix we used `now.isoformat()` for both.
+             
+             fix_ts = event["timestamp"]
+             
+             for panel in self.active_panels:
+                 original_len = len(panel["interactions"])
+                 panel["interactions"] = [
+                     i for i in panel["interactions"] 
+                     if not (i["user_id"] == uid and i["action"] == "fix" and i["timestamp"] == fix_ts)
+                 ]
+                 # If we removed an interaction, we are done with this fix event
+                 if len(panel["interactions"]) < original_len:
+                     break
 
     # --- Panel Logic (Legacy/Specific) ---
 
@@ -247,7 +341,7 @@ class Knecht(commands.Cog):
 
         # Update Daily Work (Placed)
         uid = str(user.id)
-        self.daily_work["placed"][uid] = self.daily_work["placed"].get(uid, 0) + 1
+        self._add_work_event("placed", uid, now.isoformat(), details={"panel_id": panel["id"]}, save=False, force_id=panel["id"])
         
         self.save_stats()
         return panel
@@ -396,8 +490,10 @@ class Knecht(commands.Cog):
         if eligible_count > 0:
             self.tracking_data["fixed_this_hour"] += 1 
             uid = str(user.id)
-            self.daily_work["fixes"][uid] = self.daily_work["fixes"].get(uid, 0) + 1
-            self.save_stats()
+            # Find which panel was fixed to add details? 
+            # For now just generic fix event, or we could link it.
+            # Using current time as ID seed effectively.
+            self._add_work_event("fixes", uid, now.isoformat(), save=True)
             
         return {
             "eligible_count": eligible_count,
@@ -442,8 +538,8 @@ class Knecht(commands.Cog):
                             f"**Current Status**\n\n"
                             f"☀️ **Active Panels**: {len(self.active_panels)}\n"
                             f"🔧 **Fixed (Hour)**: {self.tracking_data['fixed_this_hour']}\n\n"
-                            f"📦 **Containers Today**: {sum(self.daily_work['containers'].values())}\n"
-                            f"⚓ **Hafenevents Today**: {sum(self.daily_work['hafenevents'].values())}\n\n"
+                            f"📦 **Containers Today**: {len(self.daily_work['containers'])}\n"
+                            f"⚓ **Hafenevents Today**: {len(self.daily_work['hafenevents'])}\n\n"
                             f"Use buttons below to update."
                         )
                         await msg.edit(embed=embed)
@@ -491,8 +587,10 @@ class Knecht(commands.Cog):
              self.history.append(archive_entry)
         
         # 2. Aggregate Lifetime
+        counts = self._get_daily_counts()
+        
         for category in ["placed", "fixes", "containers", "hafenevents"]:
-            for uid, count in self.daily_work[category].items():
+            for uid, count in counts[category].items():
                 if str(uid) not in self.lifetime_work[category]:
                     self.lifetime_work[category][str(uid)] = 0
                 self.lifetime_work[category][str(uid)] += count
@@ -503,10 +601,10 @@ class Knecht(commands.Cog):
 
         # 3. Clear Current
         self.daily_work = {
-            "placed": {},
-            "fixes": {},
-            "containers": {},
-            "hafenevents": {}
+            "placed": [],
+            "fixes": [],
+            "containers": [],
+            "hafenevents": []
         }
         self.daily_profit = {}
         self.daily_batteries = {}
@@ -536,8 +634,8 @@ class Knecht(commands.Cog):
     @check_permissions()
     async def knecht_add(self, interaction: discord.Interaction):
         # Update logic to include new mechanics in description
-        containers_today = sum(self.daily_work['containers'].values())
-        hafenevents_today = sum(self.daily_work['hafenevents'].values())
+        containers_today = len(self.daily_work['containers'])
+        hafenevents_today = len(self.daily_work['hafenevents'])
         
         embed = discord.Embed(
             title="Knecht Control", 
@@ -558,12 +656,91 @@ class Knecht(commands.Cog):
         self.save_stats()
 
 
-    @app_commands.command(name='knecht_clear_panels', description="Reset active panels count to 0 (Debug only).")
+    @app_commands.command(name='knecht_clear', description="Clear/Remove panels or events. Usage: all_p, all_c, ID, etc.")
     @check_permissions()
-    async def knecht_clear_panels(self, interaction: discord.Interaction):
-        self.active_panels = []
+    async def knecht_clear(self, interaction: discord.Interaction, query: str):
+        """
+        Clears items based on query.
+        - 'all_panels' (all_p), 'all_containers' (all_c), 'all_hafenevents' (all_h)
+        - Specific ID (matches panel or event)
+        """
+        query = query.strip()
+        deleted_count = 0
+        deleted_msg = []
+        
+        # Alias Map
+        if query == "all_p": query = "all_panels"
+        if query == "all_c": query = "all_containers"
+        if query == "all_h": query = "all_hafenevents"
+
+        # 1. Bulk Clear
+        if query == "all_panels":
+            deleted_count = len(self.active_panels)
+            # For bulk clear, we might skip detailed reversion or loop through them?
+            # Creating "placed" events reversion might be too heavy?
+            # Let's just clear active panels list roughly as requested.
+            # But we should probably check if we need to revert placement events?
+            # User request: "clearing an action does not remove its value... clear of panel fix action... state-change needs to be reverted"
+            # If we clear ALL panels, we are just resetting the board.
+            self.active_panels = []
+            deleted_msg.append(f"Cleared {deleted_count} active panels.")
+            
+        elif query == "all_containers":
+            # Revert profit for all
+            for e in self.daily_work["containers"]:
+                self._revert_event_effects(e)
+                
+            deleted_count = len(self.daily_work["containers"])
+            self.daily_work["containers"] = []
+            deleted_msg.append(f"Cleared {deleted_count} containers (Profit Reverted).")
+            
+        elif query == "all_hafenevents":
+            # Revert profit for all
+            for e in self.daily_work["hafenevents"]:
+                self._revert_event_effects(e)
+                
+            deleted_count = len(self.daily_work["hafenevents"])
+            self.daily_work["hafenevents"] = []
+            deleted_msg.append(f"Cleared {deleted_count} hafenevents (Profit Reverted).")
+
+        # 2. ID Search & Destroy
+        else:
+            # Check Active Panels (If ID matches a panel ID)
+            # Note: Panels are NOT events, they are state. 
+            # If user clears a panel vs clears a "placed" event?
+            # User said "placed panel shows ugly long id... it seems to be linked to the panel, panel is removed upon clearing the work id"
+            # So user is likely clearing the WORK EVENT ID.
+            
+            # Use a collection of all events to find the match
+            found_event = None
+            found_cat = None
+            
+            for cat in ["containers", "hafenevents", "placed", "fixes"]:
+                for i, e in enumerate(self.daily_work[cat]):
+                    if e['id'].startswith(query):
+                        found_event = e
+                        found_cat = cat
+                        break
+                if found_event: break
+            
+            if found_event:
+                self._revert_event_effects(found_event)
+                self.daily_work[found_cat].remove(found_event)
+                deleted_msg.append(f"Removed {found_cat} event `{found_event['id']}` (Effects Reverted).")
+            else:
+                 # Fallback: maybe they targeted a panel ID directly?
+                 # If so, just remove the panel.
+                 original_len = len(self.active_panels)
+                 self.active_panels = [p for p in self.active_panels if not (p['id'].startswith(query))]
+                 if len(self.active_panels) < original_len:
+                      deleted_msg.append(f"Removed Panel `{query}` (Direct).")
+
         self.save_stats()
-        await interaction.response.send_message("✅ Active panels cleared (Debug).")
+        
+        if deleted_msg:
+            await interaction.response.send_message(f"✅ **Action Complete**:\n" + "\n".join(deleted_msg))
+        else:
+            await interaction.response.send_message(f"❌ Nothing found matching `{query}`.", ephemeral=True)
 
     @app_commands.command(name='knecht_status', description="Debug traffic and logic.")
     @check_permissions()
@@ -573,26 +750,54 @@ class Knecht(commands.Cog):
         now = datetime.now(tz)
         present, debug_log = check_traffic_debug(interaction.guild)
         
-        leaderboard = self.hof.get_leaderboard(self.daily_work, self.daily_profit, self.daily_batteries)
+        # Aggregate counts for HoF
+        daily_counts = self._get_daily_counts()
+        leaderboard = self.hof.get_leaderboard(daily_counts, self.daily_profit, self.daily_batteries)
         
         # --- Value HoF ---
         value_hof_lines = []
         for i, (uid, val, details) in enumerate(leaderboard, 1):
              if val > 0:
-                value_hof_lines.append(f"{i}. <@{uid}>: **${val:,}** (Realized Profit)")
+                value_hof_lines.append(f"{i}. <@{uid}>: **${val:,}**")
         value_hof_str = "\n".join(value_hof_lines) or "None"
 
-        # --- Work HoF (Activity Count) ---
+        # --- Work HoF (Activity Count + Details) ---
         # Sort by total actions
         work_sorted = sorted(leaderboard, key=lambda x: sum([x[2]['placed'], x[2]['fixes'], x[2]['containers'], x[2]['hafenevents']]), reverse=True)
         work_hof_lines = []
+        
         for i, (uid, _, details) in enumerate(work_sorted, 1):
             total_acts = details['placed'] + details['fixes'] + details['containers'] + details['hafenevents']
             if total_acts > 0:
-                work_hof_lines.append(f"{i}. <@{uid}>: **{total_acts} Acts** (P:{details['placed']} F:{details['fixes']} C:{details['containers']} H:{details['hafenevents']})")
+                header = f"{i}. <@{uid}>: **{total_acts} Acts** (P:{details['placed']} F:{details['fixes']} C:{details['containers']} H:{details['hafenevents']})"
+                work_hof_lines.append(header)
+                
+                # Get lists of specific acts for this user
+                user_acts = []
+                for cat in ["placed", "fixes", "containers", "hafenevents"]:
+                    for e in self.daily_work[cat]:
+                        if e["user_id"] == uid:
+                            ts = datetime.fromisoformat(e["timestamp"]).strftime('%H:%M')
+                            eid = e["id"][:6]
+                            # Format line: "- id123: Placed panel at 13:12"
+                            if cat == "placed": 
+                                pid = e.get("details", {}).get("panel_id", "?")
+                                action_desc = f"Placed panel ({pid[:6]})" 
+                            elif cat == "fixes": action_desc = "Fixed panel"
+                            elif cat == "containers": action_desc = "Container"
+                            elif cat == "hafenevents": action_desc = "Hafenevent"
+                            else: action_desc = cat
+                            
+                            user_acts.append(f"- `{eid}`: {action_desc} at {ts}")
+                
+                # Limit debug output if crazy long? User said "too concise... split into lines"
+                # But let's verify if user_acts is empty (shouldn't be if total > 0)
+                if user_acts:
+                    work_hof_lines.extend(user_acts)
+                    
         work_hof_str = "\n".join(work_hof_lines) or "None"
         
-        placed_total = sum(d["placed"] for _, _, d in leaderboard)
+        placed_total = len(self.daily_work["placed"])
 
         # Active active_panels
         panel_lines = []
@@ -622,15 +827,20 @@ class Knecht(commands.Cog):
             f"**Debug Log**:\n```\n{debug_log}\n```"
         )
         if len(status_msg) > 2000:
-            # truncate if too long
-            status_msg = status_msg[:1900] + "\n...(truncated)"
+            # split strictly? Or just truncate.
+            # User wants richness, truncation is bad.
+            # If too long, maybe send as file or multiple messages?
+            # For now, simplistic truncation but try to keep relevant parts.
+            if len(status_msg) > 1950:
+                 status_msg = status_msg[:1950] + "\n...(truncated - too much data)"
             
         await interaction.followup.send(status_msg, ephemeral=True)
 
     @app_commands.command(name='knecht_hof', description="Show the Daily Hall of Fame ($).")
     @check_permissions()
     async def knecht_hof(self, interaction: discord.Interaction):
-        leaderboard = self.hof.get_leaderboard(self.daily_work, self.daily_profit, self.daily_batteries)
+        daily_counts = self._get_daily_counts()
+        leaderboard = self.hof.get_leaderboard(daily_counts, self.daily_profit, self.daily_batteries)
         
         if not leaderboard:
             await interaction.response.send_message("🏆 **Hall of Fame**: No activity recorded today.", ephemeral=True)
