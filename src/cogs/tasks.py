@@ -76,8 +76,9 @@ class BackgroundTasks(commands.Cog):
                 knecht_cog.tracking_data["fixed_this_hour"] = 0
             return
 
-        # Reminders: XX:31, XX:45, XX:50, XX:55
-        if now.minute in [31, 45, 50, 55]:
+        # Reminders: XX:31, XX:45, XX:50, XX:55 (Configurable)
+        reminder_minutes = knecht_cog.settings.get("reminder_minutes", [31, 45, 50, 55])
+        if now.minute in reminder_minutes:
             # Check Traffic
             from src.utils.traffic import get_valid_players
             valid_players = get_valid_players(target_channel.guild)
@@ -106,8 +107,9 @@ class BackgroundTasks(commands.Cog):
                 
                 # Import view safely
                 from src.cogs.knecht import KnechtView
-                # Only show buttons on the first reminder (XX:31)
-                view = KnechtView(knecht_cog) if now.minute == 31 else None
+                # Only show buttons on the first reminder (sorted first minute)
+                first_reminder = sorted(reminder_minutes)[0]
+                view = KnechtView(knecht_cog) if now.minute == first_reminder else None
                 
                 await target_channel.send(
                     f"⚠️ {mention_str} Panels placed but not fixed! (Time: {now.strftime('%H:%M')})", 

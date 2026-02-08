@@ -1,4 +1,10 @@
 {
     "_comment": "Game settings for the bot.",
-    "panel_liveduration": 284
+    "panel_liveduration": 284,
+    "reminder_minutes": [
+        31,
+        45,
+        50,
+        55
+    ]
 }
