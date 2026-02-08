@@ -510,12 +510,20 @@ class Knecht(commands.Cog):
              await self.update_tracking_message()
              
              active_count = len(self.active_panels)
-             msg = f"🔧 **Panels Maintained by {user.mention}!**\n"
-             
              if active_count > 0:
-                 msg += f"Active Panels: **{active_count}**\n"
+                 # Calculate remaining times for display
+                 tz = get_target_timezone()
+                 now = datetime.now(tz)
+                 times_str_list = []
+                 for p in self.active_panels:
+                     state = self.calculate_panel_state(p)
+                     finish_dt = datetime.fromisoformat(state["expiry_iso"])
+                     times_str_list.append(f"{state['remaining_minutes']}m({finish_dt.strftime('%H:%M')})")
+                 
+                 times_str = ", ".join(times_str_list)
+                 msg = f"🔧 **Panels fixed.** Remaining: {times_str}"
              else:
-                 msg += "All panels collected! 🔋"
+                 msg = "🔧 **Panels fixed.** All panels collected! 🔋"
                  
              if is_reminder:
                  await interaction.response.send_message(msg)

@@ -105,9 +105,9 @@ class BackgroundTasks(commands.Cog):
                 mention_str = ", ".join(mentions)
                 
                 # Import view safely
-                # Import view safely
                 from src.cogs.knecht import KnechtView
-                view = KnechtView(knecht_cog)
+                # Only show buttons on the first reminder (XX:31)
+                view = KnechtView(knecht_cog) if now.minute == 31 else None
                 
                 await target_channel.send(
                     f"⚠️ {mention_str} Panels placed but not fixed! (Time: {now.strftime('%H:%M')})", 
