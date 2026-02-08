@@ -35,7 +35,7 @@ def check_traffic_debug(guild: discord.Guild):
         is_playing = False
         for activity in member.activities:
             # Check for Game or keywords
-            if isinstance(activity, discord.Game) or "RAGE Multiplayer" in activity.name or "Medal" in activity.name:
+            if isinstance(activity, discord.Game) or "RAGE Multiplayer" in activity.name or "GTA" in activity.name:
                 is_playing = True
                 break
         
