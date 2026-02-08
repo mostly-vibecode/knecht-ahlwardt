@@ -619,7 +619,7 @@ class Knecht(commands.Cog):
             f"**☀️ Active Panels Detail**:\n{panel_str}\n\n"
             f"**🏆 Value HoF**:\n{value_hof_str}\n\n"
             f"**🔨 Work HoF**:\n{work_hof_str}\n\n"
-            f"**Debug Log**:\n{debug_log}"
+            f"**Debug Log**:\n```\n{debug_log}\n```"
         )
         if len(status_msg) > 2000:
             # truncate if too long
